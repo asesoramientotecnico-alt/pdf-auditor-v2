@@ -2,9 +2,12 @@ name: Auditor PDF Famiq
 
 on:
   schedule:
-    # Lunes 06:00 AR (UTC-3) = 09:00 UTC
     - cron: '0 9 * * 1'
   workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   audit:
@@ -29,15 +32,14 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SA_EMAIL }}
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-
-      - name: Create credentials.json from secret
-        run: |
-          printf '%s' "${GOOGLE_CREDENTIALS_JSON}" > credentials.json
-          node -e "JSON.parse(require('fs').readFileSync('credentials.json','utf8')); console.log('credentials.json OK')"
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
 
       - name: Run auditor
         run: node index.js

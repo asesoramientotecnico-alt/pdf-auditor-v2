@@ -11,6 +11,7 @@ import axios from 'axios';
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const MODEL_ID = 'gemini-1.5-flash';
+const IMAGE_MAX_BYTES = 3 * 1024 * 1024; // 3 MB: por encima de esto, Gemini devuelve 400.
 
 const SYSTEM_PROMPT = `Sos un Inspector de Oficina Tecnica de la empresa Famiq.
 Tu trabajo es auditar fichas de producto publicadas en la web y detectar errores
@@ -54,7 +55,10 @@ REGLAS DE SALIDA (muy importante):
 
 /**
  * Descarga una imagen y la convierte a base64 para pasarla a Gemini como inlineData.
- * Si falla, retorna null.
+ * - Si la imagen supera IMAGE_MAX_BYTES (3 MB), retorna { tooLarge: true, sizeBytes }
+ *   para que el caller audite solo con texto.
+ * - Si falla la descarga, retorna { error: string }.
+ * - En exito retorna { inlineData: { data, mimeType } }.
  */
 async function fetchImageAsInlineData(imageUrl) {
   if (!imageUrl) return null;
@@ -62,7 +66,7 @@ async function fetchImageAsInlineData(imageUrl) {
     const res = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       timeout: 30000,
-      maxContentLength: 20 * 1024 * 1024,
+      maxContentLength: 10 * 1024 * 1024,
       httpsAgent: undefined,
       validateStatus: (s) => s >= 200 && s < 400,
       headers: {
@@ -70,6 +74,11 @@ async function fetchImageAsInlineData(imageUrl) {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
       }
     });
+
+    const bytes = res.data?.byteLength ?? Buffer.byteLength(res.data);
+    if (bytes > IMAGE_MAX_BYTES) {
+      return { tooLarge: true, sizeBytes: bytes };
+    }
 
     let mimeType = (res.headers['content-type'] || '').split(';')[0].trim();
     if (!mimeType || !mimeType.startsWith('image/')) {
@@ -82,7 +91,47 @@ async function fetchImageAsInlineData(imageUrl) {
     const base64 = Buffer.from(res.data).toString('base64');
     return { inlineData: { data: base64, mimeType } };
   } catch (err) {
-    return null;
+    return { error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Extrae la mayor cantidad de detalle posible del error de Gemini para loggear.
+ * El SDK @google/generative-ai pega distintas propiedades segun el tipo de fallo.
+ */
+function formatGeminiError(err) {
+  const out = {
+    message: err?.message || String(err),
+    status: err?.status ?? err?.response?.status,
+    statusText: err?.statusText ?? err?.response?.statusText,
+    errorDetails: err?.errorDetails
+  };
+
+  const body = err?.response?.data ?? err?.response?.body ?? err?.body;
+  if (body !== undefined) {
+    if (Buffer.isBuffer(body)) {
+      try { out.body = JSON.parse(body.toString('utf8')); }
+      catch { out.body = body.toString('utf8').slice(0, 2000); }
+    } else if (typeof body === 'string') {
+      try { out.body = JSON.parse(body); }
+      catch { out.body = body.slice(0, 2000); }
+    } else {
+      out.body = body;
+    }
+  }
+
+  // Muchas veces el mensaje ya trae JSON serializado: intentamos extraerlo.
+  if (!out.body && typeof err?.message === 'string') {
+    const m = err.message.match(/\{[\s\S]*\}$/);
+    if (m) {
+      try { out.body = JSON.parse(m[0]); } catch { /* noop */ }
+    }
+  }
+
+  try {
+    return JSON.stringify(out, null, 2);
+  } catch {
+    return String(err);
   }
 }
 
@@ -195,9 +244,29 @@ export async function auditScrape(scrape, opts = {}) {
     }
   ];
 
-  const imagePart = await fetchImageAsInlineData(scrape.imagen);
-  if (imagePart) {
-    parts.unshift(imagePart);
+  const imageResult = await fetchImageAsInlineData(scrape.imagen);
+  if (imageResult && imageResult.inlineData) {
+    parts.unshift(imageResult);
+  } else if (imageResult && imageResult.tooLarge) {
+    const mb = (imageResult.sizeBytes / (1024 * 1024)).toFixed(2);
+    console.warn(
+      `[agent] Imagen ${scrape.imagen} pesa ${mb} MB (supera ${IMAGE_MAX_BYTES / (1024 * 1024)} MB). ` +
+        'Auditando solo con texto.'
+    );
+    parts.push({
+      text:
+        `La imagen publicada (${scrape.imagen}) pesa ${mb} MB y excede el limite de ${IMAGE_MAX_BYTES / (1024 * 1024)} MB, ` +
+        'por lo que NO se incluye como inlineData. ' +
+        'Realiza SOLO la validacion de consistencia numerica/tecnica con los datos provistos. ' +
+        'Marca estado_visual="ERROR" y en analisis_visual aclara que la imagen supera el tamano maximo y no pudo analizarse.'
+    });
+  } else if (imageResult && imageResult.error) {
+    parts.push({
+      text:
+        `No fue posible descargar la imagen publicada (${scrape.imagen}). ` +
+        `Motivo: ${imageResult.error}. ` +
+        'Marcar estado_visual=ERROR y explicarlo en analisis_visual.'
+    });
   } else if (scrape.imagen) {
     parts.push({
       text:
@@ -229,11 +298,13 @@ export async function auditScrape(scrape, opts = {}) {
     }
     return normalizeResult(parsed);
   } catch (err) {
+    const detail = formatGeminiError(err);
+    console.error(`[agent] Gemini REST error para ${scrape?.url || ''}:\n${detail}`);
     return {
       estado_visual: 'ERROR',
       analisis_visual: `Error llamando a Gemini: ${err?.message || err}`,
       estado_tecnico: 'ERROR',
-      discrepancias: 'No se obtuvo respuesta del modelo.',
+      discrepancias: `Gemini error body: ${detail.slice(0, 1500)}`,
       propuesta_correccion: 'Reintentar la auditoria manualmente.'
     };
   }

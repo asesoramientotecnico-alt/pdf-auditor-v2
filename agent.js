@@ -71,7 +71,6 @@ async function fetchImageAsBase64(imageUrl) {
     let mimeType = (res.headers['content-type'] || '').split(';')[0].trim();
     if (!mimeType.startsWith('image/')) mimeType = 'image/jpeg';
     const buf = Buffer.from(res.data);
-    // Gemini acepta hasta ~4MB en base64. Si supera, devolvemos null y auditamos sin imagen.
     if (buf.length > 3.5 * 1024 * 1024) {
       console.warn(`[agent] Imagen muy grande (${(buf.length / 1024 / 1024).toFixed(1)}MB), se auditara sin imagen.`);
       return null;
@@ -117,6 +116,13 @@ function normalizeResult(raw) {
   result.recomendaciones = String(raw.recomendaciones || '').trim();
   result.propuesta_correccion = String(raw.propuesta_correccion || '').trim();
   return result;
+}
+
+/**
+ * Espera ms milisegundos.
+ */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export async function auditScrape(scrape, opts = {}) {
@@ -169,41 +175,64 @@ export async function auditScrape(scrape, opts = {}) {
     parts.push({ text: 'No fue posible obtener la imagen del producto. Marcar estado_visual="SIN_IMAGEN".' });
   }
 
-  try {
-    const res = await axios.post(
-      `${GEMINI_API_URL}?key=${apiKey}`,
-      {
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0.1 }
-      },
-      { timeout: 60000, headers: { 'Content-Type': 'application/json' } }
-    );
+  const body = {
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{ role: 'user', parts }],
+    generationConfig: { temperature: 0.1 }
+  };
 
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const parsed = safeParseJson(text);
-    if (!parsed) {
-      return {
-        estado_visual: 'ERROR',
-        analisis_visual: 'Respuesta no parseable.',
-        estado_tecnico: 'ERROR',
-        discrepancias: text.slice(0, 500),
-        recomendaciones: '',
-        propuesta_correccion: 'Revisar respuesta de Gemini.'
-      };
+  // Reintentos con backoff exponencial para 429 (rate limit) y 503 (overload)
+  const MAX_RETRIES = 5;
+  const RETRY_CODES = new Set([429, 503, 502]);
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await axios.post(
+        `${GEMINI_API_URL}?key=${apiKey}`,
+        body,
+        { timeout: 60000, headers: { 'Content-Type': 'application/json' } }
+      );
+
+      const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const parsed = safeParseJson(text);
+      if (!parsed) {
+        return {
+          estado_visual: 'ERROR',
+          analisis_visual: 'Respuesta no parseable.',
+          estado_tecnico: 'ERROR',
+          discrepancias: text.slice(0, 500),
+          recomendaciones: '',
+          propuesta_correccion: 'Revisar respuesta de Gemini.'
+        };
+      }
+      return normalizeResult(parsed);
+
+    } catch (err) {
+      lastErr = err;
+      const status = err?.response?.status;
+      if (RETRY_CODES.has(status) && attempt < MAX_RETRIES) {
+        // Backoff: 15s, 30s, 60s, 120s
+        const waitMs = 15000 * Math.pow(2, attempt - 1);
+        console.warn(`[agent] Gemini ${status} (intento ${attempt}/${MAX_RETRIES}), esperando ${waitMs / 1000}s...`);
+        await sleep(waitMs);
+        continue;
+      }
+      break;
     }
-    return normalizeResult(parsed);
-  } catch (err) {
-    const body = err?.response?.data ? JSON.stringify(err.response.data).slice(0, 400) : '';
-    return {
-      estado_visual: 'ERROR',
-      analisis_visual: `Error llamando a Gemini: ${err?.message || err}`,
-      estado_tecnico: 'ERROR',
-      discrepancias: body || 'No se obtuvo respuesta.',
-      recomendaciones: '',
-      propuesta_correccion: 'Revisar API key y endpoint.'
-    };
   }
+
+  // Agotamos reintentos
+  const status = lastErr?.response?.status;
+  const body2  = lastErr?.response?.data ? JSON.stringify(lastErr.response.data).slice(0, 400) : '';
+  return {
+    estado_visual: 'ERROR',
+    analisis_visual: `Error Gemini (${status || 'red'}): ${lastErr?.message || lastErr}`,
+    estado_tecnico: 'ERROR',
+    discrepancias: body2 || 'No se obtuvo respuesta de Gemini.',
+    recomendaciones: '',
+    propuesta_correccion: 'Revisar API key, quota y endpoint.'
+  };
 }
 
 export default auditScrape;

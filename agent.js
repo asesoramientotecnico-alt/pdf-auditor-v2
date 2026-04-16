@@ -10,7 +10,7 @@ import axios from 'axios';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const MODEL_ID = 'gemini-1.5-flash';
+const MODEL_ID = 'gemini-2.0-flash';
 
 const SYSTEM_PROMPT = `Sos un Inspector de Oficina Tecnica de la empresa Famiq.
 Tu trabajo es auditar fichas de producto publicadas en la web y detectar errores

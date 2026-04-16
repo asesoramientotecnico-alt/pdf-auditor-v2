@@ -20,6 +20,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       REPORT_RECIPIENT: jortiz@famiq.com.ar
       INPUT_XLSX: prueba_robot_FT_2.xlsx
+      SPREADSHEET_ID: 1QYT15W8NJ5M2UPVyvBy-QqfnOA4fEbTbbZfy7qrNLrY
       INPUT_SHEET: Hoja2
       OUTPUT_XLSX: Reporte_Auditoria_IA.xlsx
 

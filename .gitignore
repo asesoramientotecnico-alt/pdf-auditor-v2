@@ -1,0 +1,19 @@
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Credenciales (NO subir al repo)
+credentials.json
+.env
+.env.*
+
+# Artefactos de corrida
+checkpoint.json
+Reporte_Auditoria_IA.xlsx
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

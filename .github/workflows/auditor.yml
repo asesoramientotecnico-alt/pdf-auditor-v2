@@ -1,0 +1,64 @@
+name: Auditor PDF Famiq
+
+on:
+  schedule:
+    # Lunes 06:00 AR (UTC-3) = 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Ejecutar auditoria semanal
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      REPORT_RECIPIENT: jortiz@famiq.com.ar
+      INPUT_XLSX: prueba_robot_FT_2.xlsx
+      INPUT_SHEET: Hoja2
+      OUTPUT_XLSX: Reporte_Auditoria_IA.xlsx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Create credentials.json from secret
+        run: |
+          printf '%s' "${GOOGLE_CREDENTIALS_JSON}" > credentials.json
+          node -e "JSON.parse(require('fs').readFileSync('credentials.json','utf8')); console.log('credentials.json OK')"
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+
+      - name: Run auditor
+        run: node index.js
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-auditoria-ia
+          path: Reporte_Auditoria_IA.xlsx
+          if-no-files-found: warn
+
+      - name: Upload checkpoint on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint
+          path: checkpoint.json
+          if-no-files-found: ignore
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f credentials.json

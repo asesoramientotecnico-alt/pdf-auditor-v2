@@ -63,7 +63,7 @@ export function normalizeDriveUrl(url) {
   return s;
 }
 
-async function downloadBuffer(url, { timeout = 60000 } = {}) {
+async function downloadBuffer(url, { timeout = 120000 } = {}) {
   const res = await axios.get(url, {
     responseType: 'arraybuffer',
     timeout,

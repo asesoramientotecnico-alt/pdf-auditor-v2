@@ -2,7 +2,7 @@
 // Orquestador principal del Agente Auditor de Calidad Web.
 //
 // Flujo:
-//  1. Lee prueba_robot_FT_2.xlsx (Hoja2).
+//  1. Lee el Google Sheet (ID fijo) via Sheets API con cuenta de servicio.
 //  2. Por cada fila (concurrencia 5 con p-limit):
 //       a. Descarga el PDF publicado (col 9) y el PDF maestro de Drive (col 11).
 //       b. Compara SHA-256 y marca "Integridad PDF".
@@ -20,6 +20,7 @@ import https from 'node:https';
 import axios from 'axios';
 import ExcelJS from 'exceljs';
 import pLimit from 'p-limit';
+import { google } from 'googleapis';
 
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
@@ -27,41 +28,24 @@ import { notify } from './notifier.js';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const INPUT_XLSX = process.env.INPUT_XLSX || 'prueba_robot_FT_2.xlsx';
-const INPUT_SHEET = process.env.INPUT_SHEET || 'Hoja2';
-const OUTPUT_XLSX = process.env.OUTPUT_XLSX || 'Reporte_Auditoria_IA.xlsx';
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1Yn5-1a5BqnVoNch5Cifn_5lsvhYJM1L7';
+const INPUT_SHEET    = process.env.INPUT_SHEET    || 'Hoja2';
+const OUTPUT_XLSX    = process.env.OUTPUT_XLSX    || 'Reporte_Auditoria_IA.xlsx';
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
-const CONCURRENCY = parseInt(process.env.CONCURRENCY || '5', 10);
-const RECIPIENT = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
+const CONCURRENCY    = parseInt(process.env.CONCURRENCY || '5', 10);
+const RECIPIENT      = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
+const CREDENTIALS_PATH =
+  process.env.GOOGLE_APPLICATION_CREDENTIALS || path.resolve(process.cwd(), 'credentials.json');
 
-// Columnas (1-based, segun enunciado):
-const COL = {
-  ID: 1,
-  SKU: 2,
-  DESCRIPCION: 3,
-  URL_PRODUCTO: 6,
-  URL_FT_WEB: 9,
-  LINK_FT_DRIVE: 11
-};
+const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 // -------------------- utilidades --------------------
 
-function cellValue(cell) {
-  if (!cell) return '';
-  const v = cell.value;
-  if (v == null) return '';
-  if (typeof v === 'string') return v.trim();
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'object') {
-    if (v.text) return String(v.text).trim();
-    if (v.hyperlink) return String(v.hyperlink).trim();
-    if (v.result != null) return String(v.result).trim();
-    if (Array.isArray(v.richText)) return v.richText.map((r) => r.text).join('').trim();
-  }
-  return String(v).trim();
+function col(row, oneBasedIndex) {
+  const v = row[oneBasedIndex - 1];
+  return v == null ? '' : String(v).trim();
 }
 
 /**
@@ -168,39 +152,40 @@ function saveCheckpoint(state) {
   }
 }
 
-// -------------------- excel --------------------
+// -------------------- Google Sheets --------------------
 
-async function readInputRows(filePath, sheetName) {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`No existe el Excel de entrada: ${filePath}`);
-  }
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(filePath);
-  const sheet = wb.getWorksheet(sheetName) || wb.worksheets[0];
-  if (!sheet) throw new Error(`No se encontro la hoja ${sheetName} en ${filePath}`);
+async function readSheetRows(spreadsheetId, sheetName) {
+  const auth = new google.auth.GoogleAuth({
+    keyFile: CREDENTIALS_PATH,
+    scopes: SHEETS_SCOPES
+  });
+  const sheets = google.sheets({ version: 'v4', auth });
 
+  const range = `${sheetName}`;
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
+  });
+
+  const rawRows = resp.data.values || [];
+  if (rawRows.length === 0) throw new Error(`La hoja "${sheetName}" esta vacia.`);
+
+  // Fila 0 = cabecera; filas siguientes = datos.
   const rows = [];
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return; // cabecera
-    const id = cellValue(row.getCell(COL.ID));
-    const sku = cellValue(row.getCell(COL.SKU));
-    const descripcion = cellValue(row.getCell(COL.DESCRIPCION));
-    const urlProducto = cellValue(row.getCell(COL.URL_PRODUCTO));
-    const urlFtWeb = cellValue(row.getCell(COL.URL_FT_WEB));
-    const linkFtDrive = cellValue(row.getCell(COL.LINK_FT_DRIVE));
+  rawRows.slice(1).forEach((r, i) => {
+    const rowNumber = i + 2; // 1-based, saltando cabecera
+    const id          = col(r, 1);
+    const sku         = col(r, 2);
+    const descripcion = col(r, 3);
+    const urlProducto = col(r, 6);
+    const urlFtWeb    = col(r, 9);
+    const linkFtDrive = col(r, 11);
 
-    // Fila completamente vacia -> se ignora.
     if (!id && !sku && !urlProducto && !urlFtWeb && !linkFtDrive) return;
 
-    rows.push({
-      rowNumber,
-      id,
-      sku,
-      descripcion,
-      urlProducto,
-      urlFtWeb,
-      linkFtDrive
-    });
+    rows.push({ rowNumber, id, sku, descripcion, urlProducto, urlFtWeb, linkFtDrive });
   });
   return rows;
 }
@@ -339,7 +324,7 @@ async function processRow(row, browser) {
 
 async function main() {
   console.log('=== Agente Auditor de Calidad Web ===');
-  console.log(`Entrada: ${INPUT_XLSX} (hoja "${INPUT_SHEET}")`);
+  console.log(`Entrada: Google Sheets ${SPREADSHEET_ID} (hoja "${INPUT_SHEET}")`);
   console.log(`Salida:  ${OUTPUT_XLSX}`);
   console.log(`Concurrencia: ${CONCURRENCY}`);
 
@@ -347,7 +332,7 @@ async function main() {
     console.warn('[warn] GEMINI_API_KEY no esta seteada. El agente IA devolvera ERROR.');
   }
 
-  const rows = await readInputRows(INPUT_XLSX, INPUT_SHEET);
+  const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
   console.log(`Filas a auditar: ${rows.length}`);
 
   const checkpoint = loadCheckpoint();

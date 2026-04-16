@@ -34,8 +34,8 @@ REGLAS DE SALIDA:
   "estado_visual": "COHERENTE" | "ERROR",
   "analisis_visual": "texto breve",
   "estado_tecnico": "OK" | "ERROR",
-  "discrepancias": "texto o 'Sin discrepancias'",
-  "propuesta_correccion": "que corregir o 'No requiere correccion'"
+  "discrepancias": "texto o Sin discrepancias",
+  "propuesta_correccion": "que corregir o No requiere correccion"
 }`;
 
 async function fetchImageAsBase64(imageUrl) {
@@ -60,7 +60,8 @@ function safeParseJson(text) {
   if (!text) return null;
   let clean = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try { return JSON.parse(clean); } catch {}
-  const first = clean.indexOf('{'), last = clean.lastIndexOf('}');
+  const first = clean.indexOf('{');
+  const last = clean.lastIndexOf('}');
   if (first !== -1 && last > first) {
     try { return JSON.parse(clean.slice(first, last + 1)); } catch {}
   }
@@ -68,7 +69,13 @@ function safeParseJson(text) {
 }
 
 function normalizeResult(raw) {
-  const result = { estado_visual: 'ERROR', analisis_visual: '', estado_tecnico: 'ERROR', discrepancias: '', propuesta_correccion: '' };
+  const result = {
+    estado_visual: 'ERROR',
+    analisis_visual: '',
+    estado_tecnico: 'ERROR',
+    discrepancias: '',
+    propuesta_correccion: ''
+  };
   if (!raw || typeof raw !== 'object') return result;
   result.estado_visual = String(raw.estado_visual || '').toUpperCase() === 'COHERENTE' ? 'COHERENTE' : 'ERROR';
   result.estado_tecnico = String(raw.estado_tecnico || '').toUpperCase() === 'OK' ? 'OK' : 'ERROR';
@@ -80,25 +87,82 @@ function normalizeResult(raw) {
 
 export async function auditScrape(scrape, opts = {}) {
   const apiKey = opts.apiKey || process.env.GEMINI_API_KEY;
-  if (!apiKey) return { estado_visual: 'ERROR', analisis_visual: 'Falta GEMINI_API_KEY.', estado_tecnico: 'ERROR', discrepancias: '', propuesta_correccion: '' };
+  if (!apiKey) {
+    return {
+      estado_visual: 'ERROR',
+      analisis_visual: 'Falta GEMINI_API_KEY.',
+      estado_tecnico: 'ERROR',
+      discrepancias: '',
+      propuesta_correccion: ''
+    };
+  }
 
-  if (!scrape || scrape.error) return {
-    estado_visual: 'ERROR',
-    analisis_visual: `No se pudo scrapear: ${scrape?.error || 'sin datos'}`,
-    estado_tecnico: 'ERROR',
-    discrepancias: 'Falla del scraper.',
-    propuesta_correccion: 'Revisar URL del producto.'
-  };
+  if (!scrape || scrape.error) {
+    return {
+      estado_visual: 'ERROR',
+      analisis_visual: `No se pudo scrapear: ${scrape?.error || 'sin datos'}`,
+      estado_tecnico: 'ERROR',
+      discrepancias: 'Falla del scraper.',
+      propuesta_correccion: 'Revisar URL del producto.'
+    };
+  }
 
   const especificacionesLimpias = { ...(scrape.especificaciones || {}) };
   const descripcionLarga = especificacionesLimpias.__descripcion_larga__ || '';
   delete especificacionesLimpias.__descripcion_larga__;
 
-  const userText = `Auditar la siguiente ficha de producto publicada en famiq.com.ar.\n` +
+  const userText =
+    'Auditar la siguiente ficha de producto publicada en famiq.com.ar.\n' +
     JSON.stringify({
       titulo: scrape.titulo || '',
       url: scrape.url || '',
       descripcion_maestra: opts.descripcionMaestra || '',
       descripcion_publicada: descripcionLarga,
       especificaciones_publicadas: especificacionesLimpias
-    }, null,
+    }, null, 2) +
+    '\n\nResponde UNICAMENTE con el JSON del esquema indicado.';
+
+  const parts = [{ text: userText }];
+
+  const img = await fetchImageAsBase64(scrape.imagen);
+  if (img) {
+    parts.unshift({ inline_data: { data: img.data, mime_type: img.mimeType } });
+  } else {
+    parts.push({ text: 'No fue posible obtener la imagen. Marcar estado_visual=ERROR.' });
+  }
+
+  try {
+    const res = await axios.post(
+      `${GEMINI_API_URL}?key=${apiKey}`,
+      {
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: 'user', parts }],
+        generationConfig: { temperature: 0.2 }
+      },
+      { timeout: 60000, headers: { 'Content-Type': 'application/json' } }
+    );
+
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const parsed = safeParseJson(text);
+    if (!parsed) {
+      return {
+        estado_visual: 'ERROR',
+        analisis_visual: 'Respuesta no parseable.',
+        estado_tecnico: 'ERROR',
+        discrepancias: text.slice(0, 300),
+        propuesta_correccion: 'Reintentar.'
+      };
+    }
+    return normalizeResult(parsed);
+  } catch (err) {
+    return {
+      estado_visual: 'ERROR',
+      analisis_visual: `Error llamando a Gemini: ${err?.message || err}`,
+      estado_tecnico: 'ERROR',
+      discrepancias: 'No se obtuvo respuesta.',
+      propuesta_correccion: 'Reintentar.'
+    };
+  }
+}
+
+export default auditScrape;

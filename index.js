@@ -156,7 +156,6 @@ function saveCheckpoint(state) {
 
 async function readSheetRows(spreadsheetId, sheetName) {
   const auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
     scopes: SHEETS_SCOPES
   });
   const sheets = google.sheets({ version: 'v4', auth });

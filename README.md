@@ -43,6 +43,24 @@ node index.js
 
 Si la corrida se corta, `checkpoint.json` permite retomar desde la ultima fila procesada.
 
+## Disparar el workflow y bajar el reporte
+
+Script helper en `scripts/run-and-fetch.sh` que usa `gh` CLI para:
+1. Disparar `auditor.yml` via `workflow_dispatch`.
+2. Esperar a que el run termine (con streaming de logs).
+3. Descargar el artifact `reporte-auditoria-ia` a `./reports`.
+
+```bash
+# Prerrequisito: gh CLI logueado con acceso al repo.
+gh auth login
+
+# Dispara en main y descarga a ./reports
+npm run remote:run
+
+# O especificando rama / carpeta destino:
+./scripts/run-and-fetch.sh claude/build-pdf-auditor-agent-FRFqW ./out
+```
+
 ## Reporte
 
 `Reporte_Auditoria_IA.xlsx` - una fila por SKU con las columnas solicitadas. Filas con estado `OK`/`COHERENTE` se pintan en verde; las que estan en `ERROR` o `DESACTUALIZADO`, en rojo.

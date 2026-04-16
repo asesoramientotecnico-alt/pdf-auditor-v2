@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "audit": "node index.js"
+    "audit": "node index.js",
+    "remote:run": "bash scripts/run-and-fetch.sh"
   },
   "engines": {
     "node": ">=18"

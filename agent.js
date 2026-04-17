@@ -62,10 +62,25 @@ REGLAS DE SALIDA:
   "propuesta_correccion": "que corregir exactamente, o No requiere correccion"
 }`;
 
-async function fetchImageAsBase64(imageUrl) {
-  if (!imageUrl) return null;
+async function fetchImageAsBase64(imageInput) {
+  if (!imageInput) return null;
+
+  // Caso 1: data URI (screenshot de Puppeteer) — viene como "data:image/jpeg;base64,..."
+  if (typeof imageInput === 'string' && imageInput.startsWith('data:')) {
+    const [header, data] = imageInput.split(',');
+    const mimeType = header.replace('data:', '').replace(';base64', '').trim() || 'image/jpeg';
+    // Verificar tamaño (base64 ~33% más grande que binario)
+    const approxBytes = data.length * 0.75;
+    if (approxBytes > 3.5 * 1024 * 1024) {
+      console.warn(`[agent] Screenshot muy grande (${(approxBytes/1024/1024).toFixed(1)}MB), auditando sin imagen`);
+      return null;
+    }
+    return { data, mimeType };
+  }
+
+  // Caso 2: URL normal — descargar
   try {
-    const res = await axios.get(imageUrl, {
+    const res = await axios.get(imageInput, {
       responseType: 'arraybuffer',
       timeout: 20000,
       maxContentLength: 4 * 1024 * 1024,
@@ -73,7 +88,6 @@ async function fetchImageAsBase64(imageUrl) {
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
     const buf = Buffer.from(res.data);
-    // Limitar a 3.5MB para no exceder límite de Anthropic
     if (buf.length > 3.5 * 1024 * 1024) {
       console.warn(`[agent] Imagen grande (${(buf.length/1024/1024).toFixed(1)}MB), auditando sin imagen`);
       return null;
@@ -236,3 +250,4 @@ export async function auditScrape(scrape, opts = {}) {
 }
 
 export default auditScrape;
+

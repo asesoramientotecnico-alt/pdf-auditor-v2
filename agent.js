@@ -1,5 +1,8 @@
 // agent.js
 import axios from 'axios';
+import https from 'node:https';
+
+const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -34,6 +37,7 @@ async function fetchImageAsBase64(imageUrl) {
         timeout: 15000,
         maxContentLength: 3 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
+        httpsAgent: insecureAgent,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       });
       const buf = Buffer.from(res.data);

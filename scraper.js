@@ -1,6 +1,6 @@
 // scraper.js
-// famiq.com.ar es una SPA que carga datos via /producto/{id}/data?nodo=null
-// Interceptamos esa respuesta directamente en lugar de parsear el DOM.
+// famiq.com.ar es una SPA — datos via /producto/{id}/data?nodo=null
+// Extrae: titulo, especificaciones tecnicas, descripcion, imagen del carrusel (primera foto)
 
 import puppeteer from 'puppeteer';
 
@@ -51,16 +51,14 @@ export async function scrapeProduct(url, externalBrowser = null) {
       ) {
         try {
           const ct = response.headers()['content-type'] || '';
-          if (ct.includes('json')) {
-            productoData = await response.json();
-          }
+          if (ct.includes('json')) productoData = await response.json();
         } catch (_) {}
       }
     });
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 
-    // Esperar a que llegue la respuesta de la API (máx 15s)
+    // Esperar respuesta de la API (máx 15s)
     const waitStart = Date.now();
     while (!productoData && Date.now() - waitStart < 15000) {
       await new Promise((r) => setTimeout(r, 500));
@@ -71,19 +69,14 @@ export async function scrapeProduct(url, externalBrowser = null) {
       return { url, titulo: '', imagen: null, especificaciones: {}, error: 'API /data no respondió' };
     }
 
-    // Loguear estructura completa para debug (solo primera vez)
-    console.log(`[scraper] ${url} -> API keys: ${Object.keys(productoData).join(',')}`);
-
-    // Extraer campos del JSON de la API
+    // Titulo
     const titulo = productoData.nombre || productoData.titulo || productoData.descripcion_corta || '';
 
+    // Especificaciones técnicas
     const especificaciones = {};
-
-    // caracteristicas es un array o un objeto con las specs técnicas
     const caract = productoData.caracteristicas;
     if (Array.isArray(caract)) {
       caract.forEach((item) => {
-        // cada item puede ser {nombre, valor} o {label, value} o similar
         const k = item.nombre || item.label || item.key || item.titulo || '';
         const v = item.valor || item.value || item.descripcion || '';
         if (k && v) especificaciones[k] = String(v);
@@ -94,25 +87,38 @@ export async function scrapeProduct(url, externalBrowser = null) {
       });
     }
 
-    // descripcion larga
+    // Descripcion larga
     const desc = productoData.descripcion_larga || productoData.descripcion || productoData.texto || '';
     if (desc) especificaciones['__descripcion_larga__'] = String(desc).slice(0, 4000);
 
-    // SKU/codigo
+    // SKU web
     const sku = productoData.codigo || productoData.sku || '';
     if (sku) especificaciones['__sku_web__'] = String(sku);
 
-    // LOG primer producto completo para verificar estructura
-    if (Object.keys(especificaciones).length === 0) {
-      console.warn(`[scraper] specs vacías. Muestra de datos API: ${JSON.stringify(productoData).slice(0, 400)}`);
-    } else {
-      console.log(`[scraper] titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length}: ${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).slice(0,5).join(',')}`);
+    // ---- IMAGEN: primera foto del carrusel ----
+    // La API devuelve un campo 'imagenes' con array de URLs
+    let imagen = null;
+    const imgs = productoData.imagenes;
+    if (Array.isArray(imgs) && imgs.length > 0) {
+      const first = imgs[0];
+      // Puede ser un string URL o un objeto {url, src, path, imagen, nombre}
+      if (typeof first === 'string') {
+        imagen = first;
+      } else if (first && typeof first === 'object') {
+        imagen = first.url || first.src || first.path || first.imagen || first.nombre || null;
+      }
+      // Normalizar URL relativa
+      if (imagen && !imagen.startsWith('http')) {
+        imagen = `https://www.famiq.com.ar${imagen.startsWith('/') ? '' : '/'}${imagen}`;
+      }
     }
 
-    return { url, titulo, imagen: null, especificaciones };
+    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagen ? 'SI' : 'NO'}`);
+
+    return { url, titulo, imagen, especificaciones };
 
   } catch (err) {
-    return { url, titulo:'', imagen:null, especificaciones:{}, error:`Scraper error: ${err?.message||err}` };
+    return { url, titulo: '', imagen: null, especificaciones: {}, error: `Scraper error: ${err?.message || err}` };
   } finally {
     try { await page.close(); } catch (_) {}
     if (ownsBrowser) { try { await browser.close(); } catch (_) {} }

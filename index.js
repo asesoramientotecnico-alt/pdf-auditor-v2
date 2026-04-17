@@ -284,13 +284,17 @@ async function processRow(row, browser) {
   }
 
   // 2) Scrape del producto (titulo + specs)
-  // Si ya tenemos la URL de imagen en col M, la pasamos como 3er parámetro
   const scrape = row.urlProducto
     ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };
 
-  // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
-  const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
+  // Si el scraper falló pero tenemos imagen en col M, igual auditar visualmente
+  const scrapeParaAudit = (scrape.error && row.urlImagen)
+    ? { titulo: '', especificaciones: {}, imagen: row.urlImagen, error: null }
+    : scrape;
+
+  // 3) Auditoria IA
+  const audit = await auditScrape(scrapeParaAudit, { descripcionMaestra: row.textoComercial });
   base.estadoVisual    = audit.estado_visual;
   base.analisisVisual  = audit.analisis_visual;
   base.estadoTecnico   = audit.estado_tecnico;

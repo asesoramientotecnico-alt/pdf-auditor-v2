@@ -64,18 +64,31 @@ export function normalizeDriveUrl(url) {
   return s;
 }
 
-async function downloadBuffer(url, { timeout = 120000 } = {}) {
-  const res = await axios.get(url, {
-    responseType: 'arraybuffer',
-    timeout,
-    maxRedirects: 10,
-    httpsAgent: insecureAgent,
-    validateStatus: (s) => s >= 200 && s < 400,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+async function downloadBuffer(url, { timeout = 60000, retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout,
+        maxRedirects: 10,
+        httpsAgent: insecureAgent,
+        validateStatus: (s) => s >= 200 && s < 400,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+        }
+      });
+      return Buffer.from(res.data);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        const wait = 10000 * attempt; // 10s, 20s
+        console.warn(`[pdf] intento ${attempt}/${retries} fallido para ${url.slice(0,80)}, reintentando en ${wait/1000}s...`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
     }
-  });
-  return Buffer.from(res.data);
+  }
+  throw lastErr;
 }
 
 function sha256(buf) {
@@ -345,4 +358,5 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
+
 

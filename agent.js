@@ -34,18 +34,20 @@ async function fetchImageAsBase64(imageUrl) {
     try {
       const res = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
-        timeout: 15000,
+        timeout: 20000,
         maxContentLength: 3 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
         httpsAgent: insecureAgent,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       });
       const buf = Buffer.from(res.data);
-      if (buf.length > 2.5 * 1024 * 1024) return null;
+      if (buf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${buf.length}`); return null; }
       let mime = (res.headers['content-type'] || '').split(';')[0].trim();
       if (!mime.startsWith('image/')) mime = 'image/jpeg';
+      console.log(`[agent] imagen ok (${buf.length} bytes)`);
       return { data: buf.toString('base64'), mime };
-    } catch {
+    } catch (err) {
+      console.warn(`[agent] imagen intento ${attempt} error: ${err?.message?.slice(0,100)}`);
       if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
     }
   }

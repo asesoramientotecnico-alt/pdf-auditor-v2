@@ -181,9 +181,10 @@ async function readSheetRows(spreadsheetId, sheetName) {
     const nombreArchivo  = col(r, 10);  // col J: Nombre archivo PDF
     const linkFtDrive    = col(r, 11);  // col K: Link FT Drive
     const textoComercial = col(r, 12);  // col L: Texto Comercial (FUENTE DE VERDAD)
+    const urlImagen      = col(r, 13);  // col M: URL imagen directa (chica)
 
     if (!id && !sku && !urlProducto) return;
-    rows.push({ rowNumber, id, sku, urlProducto, urlFtBase, nombreArchivo, linkFtDrive, textoComercial });
+    rows.push({ rowNumber, id, sku, urlProducto, urlFtBase, nombreArchivo, linkFtDrive, textoComercial, urlImagen });
   });
   return rows;
 }
@@ -282,9 +283,10 @@ async function processRow(row, browser) {
     base.discrepancias = `[PDF] ${err?.message || err}`;
   }
 
-  // 2) Scrape del producto (titulo + specs + imagen del carrusel)
+  // 2) Scrape del producto (titulo + specs)
+  // Si ya tenemos la URL de imagen en col M, no hace falta que el scraper la busque
   const scrape = row.urlProducto
-    ? await scrapeProduct(row.urlProducto, browser)
+    ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };
 
   // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
@@ -369,4 +371,5 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
+
 

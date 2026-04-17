@@ -34,7 +34,7 @@ async function fetchImageAsBase64(imageUrl) {
     try {
       const res = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
-        timeout: 20000,
+        timeout: 40000,
         maxContentLength: 3 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
         httpsAgent: insecureAgent,
@@ -123,7 +123,7 @@ export async function auditScrape(scrape, opts = {}) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await axios.post(ANTHROPIC_API_URL,
-        { model:MODEL, max_tokens:512, system:SYSTEM_PROMPT,
+        { model:MODEL, max_tokens:1024, system:SYSTEM_PROMPT,
           messages:[{ role:'user', content:messageContent }] },
         { timeout:40000, headers:{
             'Content-Type':'application/json',

@@ -98,17 +98,30 @@ export async function scrapeProduct(url, externalBrowser = null, urlImagenDirect
     let imagen = null;
     if (urlImagenDirecta && String(urlImagenDirecta).trim()) {
       imagen = String(urlImagenDirecta).trim();
-      console.log(`[scraper] ✓ Usando imagen de col M`);
+      console.log(`[scraper] ✓ Col M`);
     } else {
       // Fallback: construir desde imagenes[] de la API
-      const imgs = productoData.imagenes;
-      if (Array.isArray(imgs) && imgs.length > 0) {
-        const first = imgs[0];
-        const nombre = typeof first === 'string' ? first : (first?.url || first?.nombre || null);
-        if (nombre && !nombre.startsWith('http')) {
-          imagen = `https://www.famiq.com.ar/uploads/materiales/chica/${nombre}`;
-        } else if (nombre) {
-          imagen = nombre;
+      const imgs = productoData.imagenes || productoData.imagen || [];
+      const imgArray = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
+      if (imgArray.length > 0) {
+        const first = imgArray[0];
+        let nombre = null;
+        if (typeof first === 'string') {
+          nombre = first;
+        } else if (first?.url) {
+          nombre = first.url;
+        } else if (first?.nombre) {
+          nombre = first.nombre;
+        } else if (first?.name) {
+          nombre = first.name;
+        }
+        if (nombre) {
+          if (!nombre.startsWith('http')) {
+            imagen = `https://www.famiq.com.ar/uploads/materiales/chica/${nombre}`;
+          } else {
+            imagen = nombre;
+          }
+          console.log(`[scraper] ✓ API`);
         }
       }
     }

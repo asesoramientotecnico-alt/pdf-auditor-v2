@@ -89,14 +89,22 @@ export async function notify(excelPath, opts = {}) {
     console.log('[notifier] Obteniendo Site ID...');
     const siteId = await getSiteId(token);
 
-    console.log(`[notifier] Subiendo ${remoteName} a SharePoint...`);
-    const result = await uploadFile(token, siteId, excelPath, remoteName);
+    // 1) Archivo fijo — siempre el mismo nombre, para queries y dashboards
+    const fixedName = 'Reporte_Auditoria_IA.xlsx';
+    console.log(`[notifier] Subiendo archivo fijo: ${fixedName}...`);
+    const resultFijo = await uploadFile(token, siteId, excelPath, fixedName);
+    const linkFijo = resultFijo.webUrl || resultFijo['@microsoft.graph.downloadUrl'] || '';
+    console.log(`[notifier] ✅ Archivo fijo subido: ${fixedName}`);
 
-    const link = result.webUrl || result['@microsoft.graph.downloadUrl'] || '';
-    console.log(`[notifier] ✅ Reporte subido: ${remoteName}`);
-    if (link) console.log(`[notifier] Link: ${link}`);
+    // 2) Archivo histórico — nombre con fecha
+    console.log(`[notifier] Subiendo archivo histórico: ${remoteName}...`);
+    const resultHist = await uploadFile(token, siteId, excelPath, remoteName);
+    const linkHist = resultHist.webUrl || resultHist['@microsoft.graph.downloadUrl'] || '';
+    console.log(`[notifier] ✅ Archivo histórico subido: ${remoteName}`);
+    if (linkFijo) console.log(`[notifier] Link fijo: ${linkFijo}`);
+    if (linkHist) console.log(`[notifier] Link histórico: ${linkHist}`);
 
-    return { sharepoint: { name: remoteName, url: link } };
+    return { sharepoint: { fixed: { name: fixedName, url: linkFijo }, historic: { name: remoteName, url: linkHist } } };
   } catch (err) {
     const detail = err?.response?.data ? JSON.stringify(err.response.data) : err?.message;
     console.error(`[notifier] Error subiendo a SharePoint: ${detail}`);

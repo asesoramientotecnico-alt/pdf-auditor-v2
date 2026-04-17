@@ -18,34 +18,16 @@ const SPREADSHEET_ID  = process.env.SPREADSHEET_ID  || '1Yn5-1a5BqnVoNch5Cifn_5l
 const INPUT_SHEET     = process.env.INPUT_SHEET     || 'Hoja2';
 const OUTPUT_XLSX     = process.env.OUTPUT_XLSX     || 'Reporte_Auditoria_IA.xlsx';
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
-const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '5', 10);
-// Máximo de llamadas a Gemini por minuto (límite pago: 10 RPM para Flash)
-// Usamos 8 para dejar margen de seguridad
-const GEMINI_RPM      = parseInt(process.env.GEMINI_RPM || '8', 10);
+const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '3', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
-// -------------------- Semáforo Gemini --------------------
-// Controla que no se envíen más de GEMINI_RPM requests por minuto a Gemini,
-// independientemente de cuántas filas se procesen en paralelo.
-
-const geminiSlots = pLimit(1); // solo 1 request a Gemini a la vez
-const GEMINI_INTERVAL_MS = Math.ceil(60000 / GEMINI_RPM); // ms entre requests
-
-let lastGeminiCall = 0;
-
+// Llamada directa a Claude sin rate limiter artificial
+// (Claude Haiku no tiene límites de RPM problemáticos como Gemini)
 async function rateLimitedAudit(scrape, opts) {
-  return geminiSlots(async () => {
-    const now = Date.now();
-    const elapsed = now - lastGeminiCall;
-    if (elapsed < GEMINI_INTERVAL_MS) {
-      await new Promise((r) => setTimeout(r, GEMINI_INTERVAL_MS - elapsed));
-    }
-    lastGeminiCall = Date.now();
-    return auditScrape(scrape, opts);
-  });
+  return auditScrape(scrape, opts);
 }
 
 // -------------------- utilidades --------------------
@@ -277,7 +259,7 @@ async function processRow(row, browser) {
     ? await scrapeProduct(row.urlProducto, browser)
     : { error: 'Fila sin URL de producto.' };
 
-  // 3) Auditoria Gemini — con rate limiter (max GEMINI_RPM por minuto)
+  // 3) Auditoria IA con Claude Haiku
   const audit = await rateLimitedAudit(scrape, { descripcionMaestra: row.descripcion });
   base.estadoVisual    = audit.estado_visual;
   base.analisisVisual  = audit.analisis_visual;
@@ -300,7 +282,7 @@ async function processRow(row, browser) {
 async function main() {
   console.log('=== Agente Auditor de Calidad Web ===');
   console.log(`Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
-  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia scraping: ${CONCURRENCY} | Gemini RPM: ${GEMINI_RPM}`);
+  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
 
   if (!process.env.GEMINI_API_KEY) console.warn('[warn] GEMINI_API_KEY no seteada.');
 
@@ -358,5 +340,6 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
+
 
 

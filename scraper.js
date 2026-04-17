@@ -1,10 +1,13 @@
 // scraper.js
+// famiq.com.ar es una SPA — el contenido se carga via API interna.
+// Estrategia: interceptar requests XHR/fetch para capturar la respuesta
+// de la API de producto, en lugar de parsear el DOM.
+
 import puppeteer from 'puppeteer';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const NAV_TIMEOUT_MS  = 60000;
-const WAIT_TIMEOUT_MS = 25000;
+const NAV_TIMEOUT_MS = 60000;
 
 export async function launchBrowser() {
   return puppeteer.launch({
@@ -19,8 +22,7 @@ export async function launchBrowser() {
       '--disable-gpu',
       '--no-zygote',
       '--single-process',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1366,768'
+      '--disable-blink-features=AutomationControlled'
     ]
   });
 }
@@ -38,71 +40,69 @@ export async function scrapeProduct(url, externalBrowser = null) {
   page.setDefaultNavigationTimeout(NAV_TIMEOUT_MS);
 
   try {
-    // Headers realistas para evitar detección de bot
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
     await page.setExtraHTTPHeaders({
-      'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Cache-Control': 'no-cache',
-      'Pragma':  'no-cache',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none'
+      'Accept-Language': 'es-AR,es;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     });
-
-    // Ocultar que es Puppeteer
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
-
     await page.setViewport({ width: 1366, height: 768 });
 
-    // Primera carga con domcontentloaded
+    // Interceptar respuestas de la API interna
+    const apiResponses = [];
+    page.on('response', async (response) => {
+      const respUrl = response.url();
+      const status  = response.status();
+      // Capturar cualquier llamada JSON que parezca ser de producto
+      if (
+        status === 200 &&
+        (respUrl.includes('/api/') || respUrl.includes('/producto') ||
+         respUrl.includes('producto') || respUrl.includes('product')) &&
+        !respUrl.includes('.js') && !respUrl.includes('.css')
+      ) {
+        try {
+          const ct = response.headers()['content-type'] || '';
+          if (ct.includes('json')) {
+            const json = await response.json();
+            apiResponses.push({ url: respUrl, data: json });
+          }
+        } catch (_) {}
+      }
+    });
+
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 
-    // Esperar que aparezca contenido real — h1 o cualquier elemento de producto
-    // Si el sitio usa challenge JS (Cloudflare), esperar más tiempo
-    let contentLoaded = false;
-    for (const selector of [
-      'h1',
-      '.product_title',
-      '.informacion-tecnica',
-      '.woocommerce-product-details__short-description',
-      'table',
-      '.entry-summary',
-      '.product'
-    ]) {
-      try {
-        await page.waitForSelector(selector, { timeout: WAIT_TIMEOUT_MS });
-        contentLoaded = true;
-        break;
-      } catch (_) {}
-    }
+    // Esperar que el JS haga sus llamadas a la API
+    await new Promise((r) => setTimeout(r, 6000));
 
-    if (!contentLoaded) {
-      // Último recurso: esperar 8 segundos y continuar igual
-      await new Promise((r) => setTimeout(r, 8000));
-    } else {
-      // Pausa adicional para que JS termine de renderizar tablas
-      await new Promise((r) => setTimeout(r, 3000));
-    }
+    // Intentar esperar que aparezca contenido en el DOM
+    try {
+      await page.waitForFunction(
+        () => {
+          const h1 = document.querySelector('h1');
+          return h1 && h1.textContent.trim().length > 3;
+        },
+        { timeout: 15000 }
+      );
+    } catch (_) {}
 
-    const data = await page.evaluate(() => {
+    // Pausa extra
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Extraer desde el DOM (intent principal)
+    const domData = await page.evaluate(() => {
       const textOf = (el) => (el ? el.textContent.trim().replace(/\s+/g, ' ') : '');
 
-      // --- Titulo ---
       let titulo = '';
       for (const sel of ['h1.product_title','h1.entry-title','.product_title','h1']) {
         const el = document.querySelector(sel);
         if (el && textOf(el)) { titulo = textOf(el); break; }
       }
 
-      // --- Debug HTML snapshot ---
-      const bodySnippet = document.body ? document.body.innerHTML.slice(0, 500) : 'EMPTY';
-
-      // --- Especificaciones ---
       const especificaciones = {};
 
       document.querySelectorAll('table').forEach((table) => {
@@ -113,62 +113,88 @@ export async function scrapeProduct(url, externalBrowser = null) {
             if (k && v && k.length < 120) especificaciones[k] = v;
           }
           if (cells.length === 4) {
-            const k1 = textOf(cells[0]); const v1 = textOf(cells[1]);
-            const k2 = textOf(cells[2]); const v2 = textOf(cells[3]);
-            if (k1 && v1 && k1.length < 120) especificaciones[k1] = v1;
-            if (k2 && v2 && k2.length < 120) especificaciones[k2] = v2;
+            const k1=textOf(cells[0]),v1=textOf(cells[1]),k2=textOf(cells[2]),v2=textOf(cells[3]);
+            if (k1&&v1&&k1.length<120) especificaciones[k1]=v1;
+            if (k2&&v2&&k2.length<120) especificaciones[k2]=v2;
           }
           if (cells.length > 4) {
-            for (let i = 0; i + 1 < cells.length; i += 2) {
-              const k = textOf(cells[i]); const v = textOf(cells[i+1]);
-              if (k && v && k.length < 120) especificaciones[k] = v;
+            for (let i=0;i+1<cells.length;i+=2) {
+              const k=textOf(cells[i]),v=textOf(cells[i+1]);
+              if (k&&v&&k.length<120) especificaciones[k]=v;
             }
           }
         });
       });
 
-      // dl/dt/dd
       document.querySelectorAll('dl').forEach((dl) => {
-        const dts = dl.querySelectorAll('dt');
-        const dds = dl.querySelectorAll('dd');
-        for (let i = 0; i < Math.min(dts.length, dds.length); i++) {
-          const k = textOf(dts[i]); const v = textOf(dds[i]);
-          if (k && v && !especificaciones[k]) especificaciones[k] = v;
+        const dts=dl.querySelectorAll('dt'), dds=dl.querySelectorAll('dd');
+        for (let i=0;i<Math.min(dts.length,dds.length);i++) {
+          const k=textOf(dts[i]),v=textOf(dds[i]);
+          if (k&&v&&!especificaciones[k]) especificaciones[k]=v;
         }
       });
 
-      // Descripcion larga
       const descEl = document.querySelector(
-        '#tab-description, .woocommerce-Tabs-panel--description, .product-description, .entry-content, .woocommerce-product-details__short-description'
+        '#tab-description,.woocommerce-Tabs-panel--description,.product-description,.entry-content,.woocommerce-product-details__short-description'
       );
       if (descEl) {
-        const desc = textOf(descEl).slice(0, 4000);
+        const desc = textOf(descEl).slice(0,4000);
         if (desc) especificaciones['__descripcion_larga__'] = desc;
       }
 
-      const skuEl = document.querySelector('.sku, [itemprop="sku"]');
+      const skuEl = document.querySelector('.sku,[itemprop="sku"]');
       if (skuEl) especificaciones['__sku_web__'] = textOf(skuEl);
 
-      return { titulo, especificaciones, bodySnippet };
+      // Capturar todo el texto visible como fallback
+      const bodyText = document.body ? document.body.innerText.slice(0, 3000) : '';
+
+      return { titulo, especificaciones, bodyText };
     });
 
-    console.log(`[scraper] ${url} titulo="${data.titulo}" specs=${Object.keys(data.especificaciones).filter(k=>!k.startsWith('__')).length} keys`);
-    if (!data.titulo && Object.keys(data.especificaciones).length === 0) {
-      console.warn(`[scraper] WARN: pagina vacia. HTML snippet: ${data.bodySnippet.replace(/\n/g,' ').slice(0,200)}`);
+    // Si el DOM está vacío, intentar parsear desde respuestas de API interceptadas
+    let titulo       = domData.titulo;
+    let especificaciones = domData.especificaciones;
+
+    console.log(`[scraper] ${url} DOM: titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} apiResponses=${apiResponses.length}`);
+
+    // Log de API responses para debug
+    if (apiResponses.length > 0) {
+      apiResponses.forEach(r => {
+        console.log(`  [api] ${r.url.slice(0,100)} keys=${Object.keys(r.data).slice(0,8).join(',')}`);
+      });
     }
 
-    return {
-      url,
-      titulo:           data.titulo || '',
-      imagen:           null,
-      especificaciones: data.especificaciones || {}
-    };
+    // Si DOM vacío pero hay texto visible, usarlo como descripción
+    if (!titulo && domData.bodyText && domData.bodyText.length > 50) {
+      const lines = domData.bodyText.split('\n').map(l=>l.trim()).filter(l=>l.length>3);
+      titulo = lines[0] || '';
+      if (lines.length > 1) especificaciones['__descripcion_larga__'] = lines.slice(0,30).join(' | ');
+      console.log(`[scraper] fallback texto visible: "${titulo.slice(0,80)}"`);
+    }
+
+    // Si hay respuestas de API, extraer campos del producto
+    if ((!titulo || Object.keys(especificaciones).length === 0) && apiResponses.length > 0) {
+      for (const resp of apiResponses) {
+        const d = resp.data;
+        // Intentar campos comunes de APIs de productos
+        if (d.nombre || d.name || d.titulo || d.title) {
+          titulo = d.nombre || d.name || d.titulo || d.title || titulo;
+        }
+        if (d.especificaciones || d.attributes || d.specs) {
+          const specs = d.especificaciones || d.attributes || d.specs;
+          if (typeof specs === 'object') Object.assign(especificaciones, specs);
+        }
+        if (d.descripcion || d.description) {
+          especificaciones['__descripcion_larga__'] = String(d.descripcion || d.description).slice(0,4000);
+        }
+      }
+      console.log(`[scraper] API fallback: titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length}`);
+    }
+
+    return { url, titulo: titulo||'', imagen: null, especificaciones };
 
   } catch (err) {
-    return {
-      url, titulo: '', imagen: null, especificaciones: {},
-      error: `Scraper error: ${err?.message || err}`
-    };
+    return { url, titulo:'', imagen:null, especificaciones:{}, error:`Scraper error: ${err?.message||err}` };
   } finally {
     try { await page.close(); } catch (_) {}
     if (ownsBrowser) { try { await browser.close(); } catch (_) {} }

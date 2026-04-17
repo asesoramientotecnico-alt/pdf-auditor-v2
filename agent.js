@@ -162,16 +162,13 @@ export async function auditScrape(scrape, opts = {}) {
   delete especificacionesLimpias.__descripcion_larga__;
   delete especificacionesLimpias.__sku_web__;
 
-  // Intentar obtener imagen
-  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
-
   const userTextContent = {
     texto_comercial_maestro:   opts.descripcionMaestra || '',
     titulo_web:                scrape.titulo || '',
     url:                       scrape.url || '',
+    imagen_url:                scrape.imagen || '',
     descripcion_larga_web:     descripcionLarga,
-    especificaciones_tecnicas: especificacionesLimpias,
-    imagen_disponible:         img !== null
+    especificaciones_tecnicas: especificacionesLimpias
   };
 
   const userText =
@@ -179,16 +176,8 @@ export async function auditScrape(scrape, opts = {}) {
     JSON.stringify(userTextContent, null, 2) +
     '\n\nResponde UNICAMENTE con el JSON del esquema indicado.';
 
-  // Construir partes del mensaje — imagen primero si existe
-  let messageContent;
-  if (img) {
-    messageContent = [
-      { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } },
-      { type: 'text', text: userText }
-    ];
-  } else {
-    messageContent = userText;
-  }
+  // Solo texto por ahora — imagen se agrega en próxima versión
+  const messageContent = userText;
 
   const MAX_RETRIES = 4;
   const RETRY_CODES = new Set([429, 529, 503, 502]);
@@ -250,4 +239,5 @@ export async function auditScrape(scrape, opts = {}) {
 }
 
 export default auditScrape;
+
 

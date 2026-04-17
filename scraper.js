@@ -119,7 +119,8 @@ export async function scrapeProduct(url, externalBrowser = null) {
                  null;
       }
       if (imagen && !imagen.startsWith('http')) {
-        imagen = `https://www.famiq.com.ar${imagen.startsWith('/') ? '' : '/'}${imagen}`;
+        // Usar path /uploads/materiales/chica/ — imágenes optimizadas, más livianas
+        imagen = `https://www.famiq.com.ar/uploads/materiales/chica/${imagen}`;
       }
     }
 
@@ -136,3 +137,4 @@ export async function scrapeProduct(url, externalBrowser = null) {
 }
 
 export default scrapeProduct;
+

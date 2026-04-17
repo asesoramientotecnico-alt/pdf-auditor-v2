@@ -47,6 +47,7 @@ REGLAS DE SALIDA:
 - Esquema EXACTO:
 {
   "estado_tecnico": "OK" | "ERROR",
+  "validaciones": "tabla de lo que comparaste: 'diametro_mm: maestro=152.4 tabla=152.4 OK | material: maestro=304 tabla=304 OK | norma: maestro=DAN tabla=DANESA OK' — siempre completar aunque todo este OK",
   "discrepancias": "lista detallada de discrepancias encontradas, o Sin discrepancias",
   "recomendaciones": "sugerencias de mejora aunque no sean errores criticos, o Sin recomendaciones",
   "propuesta_correccion": "que corregir exactamente, o No requiere correccion"
@@ -70,10 +71,12 @@ function normalizeResult(raw) {
     analisis_visual:      'Auditoria de texto (sin imagen).',
     estado_tecnico:       'ERROR',
     discrepancias:        '',
+    validaciones:         '',
     recomendaciones:      '',
     propuesta_correccion: ''
   };
   if (!raw || typeof raw !== 'object') return result;
+  result.validaciones         = String(raw.validaciones         || '').trim();
   result.estado_tecnico       = String(raw.estado_tecnico || '').toUpperCase() === 'OK' ? 'OK' : 'ERROR';
   result.discrepancias        = String(raw.discrepancias        || '').trim();
   result.recomendaciones      = String(raw.recomendaciones      || '').trim();
@@ -91,7 +94,7 @@ export async function auditScrape(scrape, opts = {}) {
     return {
       estado_visual: 'SIN_IMAGEN', analisis_visual: 'Falta ANTHROPIC_API_KEY.',
       estado_tecnico: 'ERROR', discrepancias: '',
-      recomendaciones: '', propuesta_correccion: ''
+      validaciones: '', recomendaciones: '', propuesta_correccion: ''
     };
   }
 
@@ -99,7 +102,7 @@ export async function auditScrape(scrape, opts = {}) {
     return {
       estado_visual: 'SIN_IMAGEN', analisis_visual: `No se pudo scrapear: ${scrape?.error || 'sin datos'}`,
       estado_tecnico: 'ERROR', discrepancias: 'Falla del scraper.',
-      recomendaciones: '', propuesta_correccion: 'Revisar URL del producto.'
+      validaciones: '', recomendaciones: '', propuesta_correccion: 'Revisar URL del producto.'
     };
   }
 
@@ -148,7 +151,7 @@ export async function auditScrape(scrape, opts = {}) {
         return {
           estado_visual: 'SIN_IMAGEN', analisis_visual: 'Respuesta no parseable.',
           estado_tecnico: 'ERROR', discrepancias: text.slice(0, 500),
-          recomendaciones: '', propuesta_correccion: 'Revisar respuesta de Claude.'
+          validaciones: '', recomendaciones: '', propuesta_correccion: 'Revisar respuesta de Claude.'
         };
       }
       return normalizeResult(parsed);
@@ -174,8 +177,9 @@ export async function auditScrape(scrape, opts = {}) {
   return {
     estado_visual: 'SIN_IMAGEN', analisis_visual: `Error Claude (${status}): ${lastErr?.message || lastErr}`,
     estado_tecnico: 'ERROR', discrepancias: body2 || 'Sin respuesta.',
-    recomendaciones: '', propuesta_correccion: 'Revisar ANTHROPIC_API_KEY.'
+    validaciones: '', recomendaciones: '', propuesta_correccion: 'Revisar ANTHROPIC_API_KEY.'
   };
 }
 
 export default auditScrape;
+

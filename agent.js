@@ -65,14 +65,15 @@ function safeParseJson(text) {
 
 function normalize(raw) {
   if (!raw || typeof raw !== 'object') return {
-    estado_visual:'SIN_IMAGEN', analisis_visual:'Sin imagen.', estado_tecnico:'ERROR',
+    estado_visual:'SIN_IMAGEN', analisis_visual:'Sin respuesta parseable.', estado_tecnico:'ERROR',
     validaciones:'', discrepancias:'', recomendaciones:'', propuesta_correccion:''
   };
   const v = String(raw.estado_visual||'').toUpperCase();
+  const t = String(raw.estado_tecnico||'').toUpperCase();
   return {
-    estado_visual: v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR':'SIN_IMAGEN',
+    estado_visual:        v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR':'SIN_IMAGEN',
     analisis_visual:      String(raw.analisis_visual      ||'').trim(),
-    estado_tecnico:       String(raw.estado_tecnico       ||'').toUpperCase()==='OK'?'OK':'ERROR',
+    estado_tecnico:       t==='OK'?'OK':'ERROR',
     validaciones:         String(raw.validaciones         ||'').trim(),
     discrepancias:        String(raw.discrepancias        ||'').trim(),
     recomendaciones:      String(raw.recomendaciones      ||'').trim(),
@@ -111,8 +112,13 @@ export async function auditScrape(scrape, opts = {}) {
     JSON.stringify(payload, null, 1) +   // indent=1 para menos tokens que indent=2
     '\nResponde SOLO el JSON indicado.';
 
-  // Imagen
-  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
+  // Imagen — opcional, no bloquea validación técnica
+  let img = null;
+  if (scrape.imagen) {
+    img = await fetchImageAsBase64(scrape.imagen);
+    if (!img) console.warn(`[agent] imagen no disponible, continúa sin visual`);
+  }
+
   const messageContent = img
     ? [{ type:'image', source:{ type:'base64', media_type:img.mime, data:img.data }},
        { type:'text', text:userText }]

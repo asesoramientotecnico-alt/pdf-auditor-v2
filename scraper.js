@@ -94,10 +94,13 @@ export async function scrapeProduct(url, externalBrowser = null, urlImagenDirect
     const sku = productoData.codigo || productoData.sku || '';
     if (sku) especificaciones['__sku_web__'] = String(sku);
 
-    // Imagen: usar URL directa de col M si está disponible
-    // Si no, intentar construirla desde imagenes[] de la API
-    let imagen = urlImagenDirecta || null;
-    if (!imagen) {
+    // Imagen: PRIORIDAD a URL directa de col M
+    let imagen = null;
+    if (urlImagenDirecta && String(urlImagenDirecta).trim()) {
+      imagen = String(urlImagenDirecta).trim();
+      console.log(`[scraper] ✓ Usando imagen de col M`);
+    } else {
+      // Fallback: construir desde imagenes[] de la API
       const imgs = productoData.imagenes;
       if (Array.isArray(imgs) && imgs.length > 0) {
         const first = imgs[0];
@@ -110,7 +113,7 @@ export async function scrapeProduct(url, externalBrowser = null, urlImagenDirect
       }
     }
 
-    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagen || 'NO'}`);
+    console.log(`[scraper] ${url} titulo="${titulo.slice(0,40)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagen ? '✓' : '✗'}`);
 
     return { url, titulo, imagen, especificaciones };
 

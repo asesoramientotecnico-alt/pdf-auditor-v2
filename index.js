@@ -284,7 +284,7 @@ async function processRow(row, browser) {
   }
 
   // 2) Scrape del producto (titulo + specs)
-  // Si ya tenemos la URL de imagen en col M, no hace falta que el scraper la busque
+  // Si ya tenemos la URL de imagen en col M, la pasamos como 3er parámetro
   const scrape = row.urlProducto
     ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };

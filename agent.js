@@ -106,7 +106,14 @@ export async function auditScrape(scrape, opts = {}) {
     '\nResponde SOLO el JSON indicado.';
 
   // Imagen
-  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
+  let img = null;
+  if (scrape.imagen) {
+    console.log(`[agent] Descargando imagen: ${scrape.imagen.slice(0,80)}`);
+    img = await fetchImageAsBase64(scrape.imagen);
+    if (!img) {
+      console.warn(`[agent] ⚠️ No se pudo descargar/validar imagen. Continuando sin ella.`);
+    }
+  }
   const messageContent = img
     ? [{ type:'image', source:{ type:'base64', media_type:img.mime, data:img.data }},
        { type:'text', text:userText }]

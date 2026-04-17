@@ -3,8 +3,8 @@ import puppeteer from 'puppeteer';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const NAV_TIMEOUT_MS = 60000;
-const WAIT_TIMEOUT_MS = 20000;
+const NAV_TIMEOUT_MS  = 60000;
+const WAIT_TIMEOUT_MS = 25000;
 
 export async function launchBrowser() {
   return puppeteer.launch({
@@ -18,7 +18,9 @@ export async function launchBrowser() {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--no-zygote',
-      '--single-process'
+      '--single-process',
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1366,768'
     ]
   });
 }
@@ -36,19 +38,56 @@ export async function scrapeProduct(url, externalBrowser = null) {
   page.setDefaultNavigationTimeout(NAV_TIMEOUT_MS);
 
   try {
+    // Headers realistas para evitar detección de bot
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Cache-Control': 'no-cache',
+      'Pragma':  'no-cache',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none'
+    });
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: NAV_TIMEOUT_MS });
+    // Ocultar que es Puppeteer
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
 
-    // Esperar tabla o h1
-    try {
-      await page.waitForSelector('table, h1, .product_title', { timeout: WAIT_TIMEOUT_MS });
-    } catch (_) {}
+    await page.setViewport({ width: 1366, height: 768 });
 
-    // Pausa para render JS completo
-    await new Promise((r) => setTimeout(r, 2500));
+    // Primera carga con domcontentloaded
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+
+    // Esperar que aparezca contenido real — h1 o cualquier elemento de producto
+    // Si el sitio usa challenge JS (Cloudflare), esperar más tiempo
+    let contentLoaded = false;
+    for (const selector of [
+      'h1',
+      '.product_title',
+      '.informacion-tecnica',
+      '.woocommerce-product-details__short-description',
+      'table',
+      '.entry-summary',
+      '.product'
+    ]) {
+      try {
+        await page.waitForSelector(selector, { timeout: WAIT_TIMEOUT_MS });
+        contentLoaded = true;
+        break;
+      } catch (_) {}
+    }
+
+    if (!contentLoaded) {
+      // Último recurso: esperar 8 segundos y continuar igual
+      await new Promise((r) => setTimeout(r, 8000));
+    } else {
+      // Pausa adicional para que JS termine de renderizar tablas
+      await new Promise((r) => setTimeout(r, 3000));
+    }
 
     const data = await page.evaluate(() => {
       const textOf = (el) => (el ? el.textContent.trim().replace(/\s+/g, ' ') : '');
@@ -60,16 +99,8 @@ export async function scrapeProduct(url, externalBrowser = null) {
         if (el && textOf(el)) { titulo = textOf(el); break; }
       }
 
-      // --- DEBUG: capturar estructura real de tablas ---
-      const debugTablas = [];
-      document.querySelectorAll('table').forEach((table, ti) => {
-        const rows = [];
-        table.querySelectorAll('tr').forEach((tr) => {
-          const cells = Array.from(tr.querySelectorAll('th, td')).map(c => textOf(c));
-          if (cells.some(c => c)) rows.push(cells);
-        });
-        if (rows.length > 0) debugTablas.push({ tabla: ti, clase: table.className, rows: rows.slice(0, 5) });
-      });
+      // --- Debug HTML snapshot ---
+      const bodySnippet = document.body ? document.body.innerHTML.slice(0, 500) : 'EMPTY';
 
       // --- Especificaciones ---
       const especificaciones = {};
@@ -77,10 +108,8 @@ export async function scrapeProduct(url, externalBrowser = null) {
       document.querySelectorAll('table').forEach((table) => {
         table.querySelectorAll('tr').forEach((tr) => {
           const cells = Array.from(tr.querySelectorAll('th, td'));
-
           if (cells.length === 2) {
-            const k = textOf(cells[0]);
-            const v = textOf(cells[1]);
+            const k = textOf(cells[0]); const v = textOf(cells[1]);
             if (k && v && k.length < 120) especificaciones[k] = v;
           }
           if (cells.length === 4) {
@@ -117,21 +146,16 @@ export async function scrapeProduct(url, externalBrowser = null) {
         if (desc) especificaciones['__descripcion_larga__'] = desc;
       }
 
-      // SKU web
       const skuEl = document.querySelector('.sku, [itemprop="sku"]');
       if (skuEl) especificaciones['__sku_web__'] = textOf(skuEl);
 
-      return { titulo, especificaciones, debugTablas };
+      return { titulo, especificaciones, bodySnippet };
     });
 
-    // LOG DE DEBUG - solo primeras 2 filas para no saturar
-    console.log(`[scraper] ${url}`);
-    console.log(`[scraper] titulo="${data.titulo}" specs_keys=${Object.keys(data.especificaciones).filter(k=>!k.startsWith('__')).join(',')}`);
-    console.log(`[scraper] tablas encontradas: ${data.debugTablas.length}`);
-    data.debugTablas.slice(0, 3).forEach(t => {
-      console.log(`  tabla[${t.tabla}] clase="${t.clase}" rows=${t.rows.length}`);
-      t.rows.slice(0, 2).forEach(r => console.log(`    fila: ${JSON.stringify(r)}`));
-    });
+    console.log(`[scraper] ${url} titulo="${data.titulo}" specs=${Object.keys(data.especificaciones).filter(k=>!k.startsWith('__')).length} keys`);
+    if (!data.titulo && Object.keys(data.especificaciones).length === 0) {
+      console.warn(`[scraper] WARN: pagina vacia. HTML snippet: ${data.bodySnippet.replace(/\n/g,' ').slice(0,200)}`);
+    }
 
     return {
       url,

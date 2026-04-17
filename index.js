@@ -184,6 +184,7 @@ async function writeReport(filePath, results) {
     { header: 'Estado Coherencia Visual',    key: 'estadoVisual',    width: 22 },
     { header: 'Analisis de Imagen',          key: 'analisisVisual',  width: 55 },
     { header: 'Estado Consistencia Tecnica', key: 'estadoTecnico',   width: 24 },
+    { header: 'Validaciones',                key: 'validaciones',    width: 60 },
     { header: 'Discrepancias',               key: 'discrepancias',   width: 60 },
     { header: 'Recomendaciones',             key: 'recomendaciones', width: 55 },
     { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 }
@@ -208,7 +209,8 @@ async function writeReport(filePath, results) {
       sku: r.sku, descripcion: r.descripcion, urlFamiq: r.urlProducto,
       integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro,
       estadoVisual: r.estadoVisual, analisisVisual: r.analisisVisual,
-      estadoTecnico: r.estadoTecnico, discrepancias: r.discrepancias,
+      estadoTecnico: r.estadoTecnico, validaciones: r.validaciones,
+      discrepancias: r.discrepancias,
       recomendaciones: r.recomendaciones, propuesta: r.propuesta
     });
     row.alignment = { vertical: 'top', wrapText: true };
@@ -240,7 +242,7 @@ async function processRow(row, browser) {
     sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
     integridad: 'ERROR', hashWeb: '', hashMaestro: '',
     estadoVisual: 'ERROR', analisisVisual: '',
-    estadoTecnico: 'ERROR', discrepancias: '', recomendaciones: '', propuesta: ''
+    estadoTecnico: 'ERROR', discrepancias: '', validaciones: '', recomendaciones: '', propuesta: ''
   };
 
   // 1) Integridad PDF
@@ -268,6 +270,7 @@ async function processRow(row, browser) {
   base.analisisVisual  = audit.analisis_visual;
   base.estadoTecnico   = audit.estado_tecnico;
   base.recomendaciones = audit.recomendaciones || '';
+  base.validaciones    = audit.validaciones    || '';
 
   const agentDisc = audit.discrepancias || '';
   if (base.discrepancias && agentDisc && agentDisc !== 'Sin discrepancias') {
@@ -315,7 +318,7 @@ async function main() {
           sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
           integridad: 'ERROR', hashWeb: '', hashMaestro: '',
           estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
-          estadoTecnico: 'ERROR', discrepancias: '', recomendaciones: '', propuesta: ''
+          estadoTecnico: 'ERROR', discrepancias: '', validaciones: '', recomendaciones: '', propuesta: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);
@@ -342,3 +345,4 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
+

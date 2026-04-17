@@ -1,6 +1,6 @@
 // scraper.js
 // famiq.com.ar es una SPA — datos via /producto/{id}/data?nodo=null
-// Imagen: captura de pantalla del carrusel real (como lo ve el usuario)
+// Imagen: URL directa de la API (imagenes[])
 
 import puppeteer from 'puppeteer';
 
@@ -36,12 +36,11 @@ export async function scrapeProduct(url, externalBrowser = null) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-AR,es;q=0.9' });
-    await page.setViewport({ width: 1280, height: 900 });
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
-    // Interceptar la llamada a /data?nodo=null para specs y titulo
+    // Interceptar la llamada a /data?nodo=null
     let productoData = null;
     page.on('response', async (response) => {
       const respUrl = response.url();
@@ -59,7 +58,6 @@ export async function scrapeProduct(url, externalBrowser = null) {
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 
-    // Esperar respuesta de la API (máx 15s)
     const waitStart = Date.now();
     while (!productoData && Date.now() - waitStart < 15000) {
       await new Promise((r) => setTimeout(r, 500));
@@ -96,58 +94,38 @@ export async function scrapeProduct(url, externalBrowser = null) {
     const sku = productoData.codigo || productoData.sku || '';
     if (sku) especificaciones['__sku_web__'] = String(sku);
 
-    // ---- IMAGEN: captura de pantalla del carrusel tal como lo ve el usuario ----
-    // Esperar a que la imagen del producto se cargue visualmente
-    let imagenBase64 = null;
-    try {
-      // Esperar que aparezca el contenedor de imagen del producto
-      await page.waitForSelector(
-        '.product-gallery, .swiper, .swiper-slide, [class*="galeria"], [class*="carousel"], [class*="product"] img, main img',
-        { timeout: 10000 }
-      ).catch(() => {});
-
-      // Pausa adicional para que las imágenes terminen de cargar
-      await new Promise((r) => setTimeout(r, 2500));
-
-      // Intentar capturar solo el área del carrusel/imagen principal
-      const carouselSelectors = [
-        '.product-gallery',
-        '.swiper-container',
-        '.swiper',
-        '[class*="galeria"]',
-        '[class*="carousel"]',
-        '[class*="product-image"]',
-        '.woocommerce-product-gallery',
-      ];
-
-      let carouselElement = null;
-      for (const sel of carouselSelectors) {
-        carouselElement = await page.$(sel);
-        if (carouselElement) break;
-      }
-
-      if (carouselElement) {
-        // Captura recortada del carrusel
-        const screenshot = await carouselElement.screenshot({ type: 'jpeg', quality: 80 });
-        imagenBase64 = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
-        console.log(`[scraper] Screenshot carrusel OK (${Math.round(screenshot.length/1024)}KB)`);
-      } else {
-        // Fallback: captura de la mitad superior izquierda de la página (donde está la imagen)
-        const screenshot = await page.screenshot({
-          type: 'jpeg',
-          quality: 75,
-          clip: { x: 0, y: 150, width: 550, height: 550 }
-        });
-        imagenBase64 = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
-        console.log(`[scraper] Screenshot fallback (clip) OK (${Math.round(screenshot.length/1024)}KB)`);
-      }
-    } catch (imgErr) {
-      console.warn(`[scraper] No se pudo capturar screenshot: ${imgErr?.message || imgErr}`);
+    // ---- IMAGEN: loguear estructura real de imagenes[] para saber el formato ----
+    const imgs = productoData.imagenes;
+    console.log(`[img-debug] tipo imagenes: ${typeof imgs} | isArray: ${Array.isArray(imgs)} | length: ${Array.isArray(imgs) ? imgs.length : 'N/A'}`);
+    if (Array.isArray(imgs) && imgs.length > 0) {
+      console.log(`[img-debug] imgs[0] tipo: ${typeof imgs[0]}`);
+      console.log(`[img-debug] imgs[0] valor: ${JSON.stringify(imgs[0]).slice(0, 300)}`);
+      if (imgs.length > 1) console.log(`[img-debug] imgs[1] valor: ${JSON.stringify(imgs[1]).slice(0, 200)}`);
     }
 
-    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagenBase64 ? 'SI' : 'NO'}`);
+    // Extraer URL de imagen probando todos los campos posibles
+    let imagen = null;
+    if (Array.isArray(imgs) && imgs.length > 0) {
+      const first = imgs[0];
+      if (typeof first === 'string') {
+        imagen = first;
+      } else if (first && typeof first === 'object') {
+        // Loguear todas las keys del primer objeto
+        console.log(`[img-debug] keys de imgs[0]: ${Object.keys(first).join(', ')}`);
+        imagen = first.url || first.src || first.path || first.imagen ||
+                 first.nombre || first.file || first.href || first.link ||
+                 first.thumbnail || first.original || first.full ||
+                 Object.values(first).find(v => typeof v === 'string' && v.match(/\.(jpg|jpeg|png|webp)/i)) ||
+                 null;
+      }
+      if (imagen && !imagen.startsWith('http')) {
+        imagen = `https://www.famiq.com.ar${imagen.startsWith('/') ? '' : '/'}${imagen}`;
+      }
+    }
 
-    return { url, titulo, imagen: imagenBase64, especificaciones };
+    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagen || 'NO'}`);
+
+    return { url, titulo, imagen, especificaciones };
 
   } catch (err) {
     return { url, titulo: '', imagen: null, especificaciones: {}, error: `Scraper error: ${err?.message || err}` };

@@ -35,7 +35,18 @@ export async function scrapeProduct(url, externalBrowser = null, urlImagenDirect
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-AR,es;q=0.9' });
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+    });
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
@@ -56,7 +67,30 @@ export async function scrapeProduct(url, externalBrowser = null, urlImagenDirect
       }
     });
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    // Delay aleatorio para no parecer bot
+    await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
+
+    let navOk = false;
+    for (let navAttempt = 1; navAttempt <= 3; navAttempt++) {
+      try {
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+        if (response && response.status() === 503) {
+          console.warn(`[scraper] 503 intento ${navAttempt}/3 para ${url}, reintentando en 15s...`);
+          await new Promise(r => setTimeout(r, 15000));
+          continue;
+        }
+        navOk = true;
+        break;
+      } catch (err) {
+        if (navAttempt < 3) {
+          console.warn(`[scraper] timeout intento ${navAttempt}/3 para ${url}, reintentando...`);
+          await new Promise(r => setTimeout(r, 10000));
+        } else {
+          throw err;
+        }
+      }
+    }
+    if (!navOk) return { url, titulo: '', imagen: null, especificaciones: {}, error: 'Servidor 503 tras 3 intentos' };
 
     const waitStart = Date.now();
     while (!productoData && Date.now() - waitStart < 15000) {

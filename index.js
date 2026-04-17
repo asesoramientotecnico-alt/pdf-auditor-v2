@@ -284,17 +284,13 @@ async function processRow(row, browser) {
   }
 
   // 2) Scrape del producto (titulo + specs)
+  // Si ya tenemos la URL de imagen en col M, la pasamos como 3er parámetro
   const scrape = row.urlProducto
     ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };
 
-  // Si el scraper falló pero tenemos imagen en col M, igual auditar visualmente
-  const scrapeParaAudit = (scrape.error && row.urlImagen)
-    ? { titulo: '', especificaciones: {}, imagen: row.urlImagen, error: null }
-    : scrape;
-
-  // 3) Auditoria IA
-  const audit = await auditScrape(scrapeParaAudit, { descripcionMaestra: row.textoComercial });
+  // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
+  const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
   base.estadoVisual    = audit.estado_visual;
   base.analisisVisual  = audit.analisis_visual;
   base.estadoTecnico   = audit.estado_tecnico;
@@ -328,7 +324,6 @@ async function main() {
   const browser    = await launchBrowser();
   const limit      = pLimit(CONCURRENCY);
   let done = 0;
-  const retryQueue = [];
 
   const tasks = rows.map((row) =>
     limit(async () => {
@@ -339,14 +334,7 @@ async function main() {
         return;
       }
       try {
-        const res = await processRow(row, browser);
-        // Si el scraper falló por timeout, no guardar como ERROR — reintentar al final
-        if (res.analisisVisual && res.analisisVisual.includes('Navigation timeout')) {
-          retryQueue.push(row);
-          done++;
-          console.log(`[retry-queue ${done}/${rows.length}] ${row.sku} — scraper timeout, se reintentará`);
-          return;
-        }
+        const res    = await processRow(row, browser);
         results[key] = res;
         done++;
         console.log(`[ok ${done}/${rows.length}] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
@@ -367,35 +355,6 @@ async function main() {
   );
 
   await Promise.all(tasks);
-
-  // Reintentar filas que dieron timeout en el scraper
-  if (retryQueue.length > 0) {
-    console.log(`\n=== Reintentando ${retryQueue.length} filas con timeout ===`);
-    const retryLimit = pLimit(1); // una por vez para no sobrecargar famiq
-    const retryTasks = retryQueue.map((row) =>
-      retryLimit(async () => {
-        const key = String(row.id || row.sku || row.rowNumber);
-        try {
-          await new Promise(r => setTimeout(r, 5000)); // pausa antes de reintentar
-          const res = await processRow(row, browser);
-          results[key] = res;
-          console.log(`[retry-ok] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
-        } catch (err) {
-          results[key] = {
-            sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
-            integridad: 'ERROR', hashWeb: '', hashMaestro: '',
-            estadoVisual: 'ERROR', analisisVisual: `Fallo reintento: ${err?.message || err}`,
-            estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
-            recomendaciones: '', propuesta: ''
-          };
-          console.error(`[retry-err] ${row.sku}: ${err?.message || err}`);
-        } finally {
-          saveCheckpoint({ results });
-        }
-      })
-    );
-    await Promise.all(retryTasks);
-  }
   try { await browser.close(); } catch (_) {}
 
   const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);

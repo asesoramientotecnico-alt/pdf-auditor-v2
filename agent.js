@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-haiku-3-5';
+const MODEL = 'claude-haiku-3-5-20251001';
 
 const SYSTEM_PROMPT = `Sos un Inspector de Oficina Tecnica de la empresa Famiq.
 Tu trabajo es auditar fichas de producto publicadas en la web y detectar errores

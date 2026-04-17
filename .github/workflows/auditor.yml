@@ -61,5 +61,5 @@ jobs:
 
       - name: Cleanup credentials
         if: always()
-        shell: pwsh
-        run: Remove-Item -Path credentials.json -ErrorAction SilentlyContinue
+        shell: cmd
+        run: if exist credentials.json del /f credentials.json

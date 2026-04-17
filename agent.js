@@ -124,7 +124,7 @@ export async function auditScrape(scrape, opts = {}) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await axios.post(ANTHROPIC_API_URL,
-        { model:MODEL, max_tokens:400, system:[{ type:"text", text:SYSTEM_PROMPT, cache_control:{ type:"ephemeral" } }],
+        { model:MODEL, max_tokens:700, system:[{ type:"text", text:SYSTEM_PROMPT, cache_control:{ type:"ephemeral" } }],
           messages:[{ role:'user', content:messageContent }] },
         { timeout:40000, headers:{
             'Content-Type':'application/json',
@@ -133,7 +133,7 @@ export async function auditScrape(scrape, opts = {}) {
           }}
       );
       const parsed = safeParseJson(res.data?.content?.[0]?.text || '');
-      return parsed ? normalize(parsed) : errResult('Respuesta no parseable.');
+      if (!parsed) { console.warn('[agent] JSON no parseable, stop_reason=' + (res.data?.stop_reason||'?') + ' texto=' + (res.data?.content?.[0]?.text||'').slice(0,200)); return errResult('Respuesta no parseable.'); } return normalize(parsed);
     } catch (err) {
       lastErr = err;
       const status = err?.response?.status;

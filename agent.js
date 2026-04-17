@@ -104,7 +104,7 @@ export async function auditScrape(scrape, opts = {}) {
   const payload = {
     texto_comercial: opts.descripcionMaestra || '',
     titulo_web:      scrape.titulo || '',
-    descripcion_web: desc.slice(0, 800),  // limitar descripcion a 800 chars
+    descripcion_web: desc.slice(0, 400),  // limitar descripcion a 800 chars
     specs
   };
 
@@ -124,12 +124,12 @@ export async function auditScrape(scrape, opts = {}) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await axios.post(ANTHROPIC_API_URL,
-        { model:MODEL, max_tokens:1024, system:SYSTEM_PROMPT,
+        { model:MODEL, max_tokens:400, system:[{ type:"text", text:SYSTEM_PROMPT, cache_control:{ type:"ephemeral" } }],
           messages:[{ role:'user', content:messageContent }] },
         { timeout:40000, headers:{
             'Content-Type':'application/json',
             'x-api-key':apiKey,
-            'anthropic-version':'2023-06-01'
+            'anthropic-version':'2023-06-01', 'anthropic-beta':'prompt-caching-2024-07-31'
           }}
       );
       const parsed = safeParseJson(res.data?.content?.[0]?.text || '');

@@ -10,25 +10,23 @@ const MODEL = 'claude-haiku-4-5-20251001';
 // Prompt comprimido — mismo contenido, menos tokens
 const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
-Inputs recibidos:
+Inputs:
 - texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
 - titulo_web: titulo publicado en famiq.com.ar
-- descripcion_web: texto descriptivo
+- descripcion_web: texto descriptivo de la pagina
 - specs: tabla de especificaciones tecnicas
-- imagen (si se adjunta): foto del producto
-
-REGLAS CRITICAS:
-- Si recibes imagen adjunta: estado_visual DEBE ser "COHERENTE" o "ERROR", NUNCA "SIN_IMAGEN"
-- Si NO recibes imagen: estado_visual DEBE ser "SIN_IMAGEN"
-- estado_tecnico es INDEPENDIENTE de la imagen: validar siempre texto_comercial vs specs
+- imagen adjunta (si disponible): primera foto del carrusel
 
 Validar:
-A) VISUAL (solo si hay imagen adjunta): imagen corresponde al texto_comercial?
-B) TECNICO: texto_comercial vs specs campo a campo: material (304/304L/316/316L), diametro, norma (DIN/SMS/DAN/SCH), conexion
-C) WEB: titulo_web y descripcion_web coinciden con specs?
+A) VISUAL (solo si hay imagen): la imagen corresponde al texto_comercial?
+B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
+C) TEXTO WEB vs specs: titulo_web y descripcion_web coinciden con specs?
 
-Responde SOLO JSON valido sin texto adicional:
-{"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X web=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU.
+Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
+
+Responde SOLO JSON valido:
+{"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
 
 async function fetchImageAsBase64(imageUrl) {
   if (!imageUrl) return null;
@@ -67,15 +65,14 @@ function safeParseJson(text) {
 
 function normalize(raw) {
   if (!raw || typeof raw !== 'object') return {
-    estado_visual:'SIN_IMAGEN', analisis_visual:'Sin respuesta parseable.', estado_tecnico:'ERROR',
+    estado_visual:'SIN_IMAGEN', analisis_visual:'Sin imagen.', estado_tecnico:'ERROR',
     validaciones:'', discrepancias:'', recomendaciones:'', propuesta_correccion:''
   };
   const v = String(raw.estado_visual||'').toUpperCase();
-  const t = String(raw.estado_tecnico||'').toUpperCase();
   return {
-    estado_visual:        v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR':'SIN_IMAGEN',
+    estado_visual: v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR':'SIN_IMAGEN',
     analisis_visual:      String(raw.analisis_visual      ||'').trim(),
-    estado_tecnico:       t==='OK'?'OK':'ERROR',
+    estado_tecnico:       String(raw.estado_tecnico       ||'').toUpperCase()==='OK'?'OK':'ERROR',
     validaciones:         String(raw.validaciones         ||'').trim(),
     discrepancias:        String(raw.discrepancias        ||'').trim(),
     recomendaciones:      String(raw.recomendaciones      ||'').trim(),
@@ -114,13 +111,8 @@ export async function auditScrape(scrape, opts = {}) {
     JSON.stringify(payload, null, 1) +   // indent=1 para menos tokens que indent=2
     '\nResponde SOLO el JSON indicado.';
 
-  // Imagen — opcional, no bloquea validación técnica
-  let img = null;
-  if (scrape.imagen) {
-    img = await fetchImageAsBase64(scrape.imagen);
-    if (!img) console.warn(`[agent] imagen no disponible para ${scrape.imagen?.slice(-40)}, continúa sin visual`);
-  }
-
+  // Imagen
+  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
   const messageContent = img
     ? [{ type:'image', source:{ type:'base64', media_type:img.mime, data:img.data }},
        { type:'text', text:userText }]

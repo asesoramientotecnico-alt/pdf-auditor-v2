@@ -1,73 +1,68 @@
 // notifier.js
+// Sube el reporte a SharePoint (OneDrive) via Microsoft Graph API
+// Auth: Resource Owner Password Credentials (usuario/contraseña corporativo)
+
 import fs from 'node:fs';
 import path from 'node:path';
-import { google } from 'googleapis';
+import axios from 'axios';
 
-const DRIVE_FOLDER_NAME = 'Reportes PDF Auditor';
-const DEFAULT_RECIPIENT = 'jortiz@famiq.com.ar';
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const SHAREPOINT_SITE   = 'famiq.sharepoint.com';
+const SITE_PATH         = '/sites/OficinaTcnica';
+const FOLDER_PATH       = 'Documentos compartidos/2026/Documentacion Famiq/PIN';
+const TENANT            = 'famiq.com.ar'; // se usa para el token endpoint
 
-const DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive'];
+async function getAccessToken(user, pass) {
+  // Intentar con tenant domain primero, luego con 'common'
+  const tenantIds = [TENANT, 'common'];
+  let lastErr;
 
-async function ensureReportsFolder(drive) {
-  const q = [
-    `name = '${DRIVE_FOLDER_NAME.replace(/'/g, "\\'")}'`,
-    `mimeType = 'application/vnd.google-apps.folder'`,
-    `trashed = false`
-  ].join(' and ');
-
-  const found = await drive.files.list({
-    q,
-    fields: 'files(id, name)',
-    spaces: 'drive'
-  });
-
-  if (found.data.files && found.data.files.length > 0) {
-    return found.data.files[0].id;
+  for (const tenant of tenantIds) {
+    try {
+      const url = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
+      const params = new URLSearchParams({
+        grant_type:    'password',
+        client_id:     '1b730954-1685-4b74-9bfd-dac224a7b894', // client_id público de OneDrive
+        scope:         'https://graph.microsoft.com/.default offline_access',
+        username:      user,
+        password:      pass,
+      });
+      const res = await axios.post(url, params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 20000
+      });
+      return res.data.access_token;
+    } catch (err) {
+      lastErr = err?.response?.data || err?.message;
+      continue;
+    }
   }
-
-  const created = await drive.files.create({
-    requestBody: {
-      name: DRIVE_FOLDER_NAME,
-      mimeType: 'application/vnd.google-apps.folder'
-    },
-    fields: 'id'
-  });
-  return created.data.id;
+  throw new Error(`No se pudo obtener token: ${JSON.stringify(lastErr)}`);
 }
 
-export async function uploadToDrive(excelPath) {
-  const auth = new google.auth.GoogleAuth({ scopes: DRIVE_SCOPES });
-  const drive = google.drive({ version: 'v3', auth });
-  const folderId = await ensureReportsFolder(drive);
-  const fileName = path.basename(excelPath);
-
-  const resp = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      parents: [folderId],
-      mimeType: XLSX_MIME
-    },
-    media: {
-      mimeType: XLSX_MIME,
-      body: fs.createReadStream(excelPath)
-    },
-    fields: 'id, name, webViewLink, webContentLink'
+async function getSiteId(token) {
+  const url = `https://graph.microsoft.com/v1.0/sites/${SHAREPOINT_SITE}:${SITE_PATH}`;
+  const res = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 15000
   });
+  return res.data.id;
+}
 
-  try {
-    await drive.permissions.create({
-      fileId: resp.data.id,
-      requestBody: { role: 'reader', type: 'anyone' }
-    });
-  } catch (_) {}
+async function uploadFile(token, siteId, localPath, remoteName) {
+  const fileBuffer = fs.readFileSync(localPath);
+  const encodedFolder = encodeURIComponent(FOLDER_PATH);
 
-  return {
-    fileId: resp.data.id,
-    name: resp.data.name,
-    webViewLink: resp.data.webViewLink,
-    webContentLink: resp.data.webContentLink
-  };
+  // Upload via PUT (hasta 4MB — el Excel del reporte es mucho menor)
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/drives/root:/${encodedFolder}/${remoteName}:/content`;
+  const res = await axios.put(url, fileBuffer, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    },
+    timeout: 30000,
+    maxBodyLength: 10 * 1024 * 1024
+  });
+  return res.data;
 }
 
 export async function notify(excelPath, opts = {}) {
@@ -75,25 +70,39 @@ export async function notify(excelPath, opts = {}) {
     throw new Error(`No existe el archivo de reporte: ${excelPath}`);
   }
 
-  let driveInfo = null;
+  const user = process.env.ONEDRIVE_USER;
+  const pass = process.env.ONEDRIVE_PASS;
+
+  if (!user || !pass) {
+    console.warn('[notifier] ONEDRIVE_USER / ONEDRIVE_PASS no configurados. El reporte queda como artifact en Actions.');
+    return { sharepoint: null };
+  }
+
   try {
-    driveInfo = await uploadToDrive(excelPath);
-    console.log(
-      `[notifier] Subido a Drive: ${driveInfo.name} (${driveInfo.fileId}) -> ${driveInfo.webViewLink}`
-    );
+    // Nombre con fecha para mantener historial
+    const fecha = new Date().toISOString().slice(0, 10); // 2026-04-17
+    const remoteName = `Reporte_Auditoria_IA_${fecha}.xlsx`;
+
+    console.log('[notifier] Obteniendo token SharePoint...');
+    const token = await getAccessToken(user, pass);
+
+    console.log('[notifier] Obteniendo Site ID...');
+    const siteId = await getSiteId(token);
+
+    console.log(`[notifier] Subiendo ${remoteName} a SharePoint...`);
+    const result = await uploadFile(token, siteId, excelPath, remoteName);
+
+    const link = result.webUrl || result['@microsoft.graph.downloadUrl'] || '';
+    console.log(`[notifier] ✅ Reporte subido: ${remoteName}`);
+    if (link) console.log(`[notifier] Link: ${link}`);
+
+    return { sharepoint: { name: remoteName, url: link } };
   } catch (err) {
-    console.error(`[notifier] Error subiendo a Drive: ${err?.message || err}`);
+    const detail = err?.response?.data ? JSON.stringify(err.response.data) : err?.message;
+    console.error(`[notifier] Error subiendo a SharePoint: ${detail}`);
+    console.warn('[notifier] El reporte queda como artifact en Actions.');
+    return { sharepoint: null };
   }
-
-  // Gmail via API de service account requiere domain-wide delegation
-  // que no está disponible en este proyecto. Se loguea el link y se omite el mail.
-  if (driveInfo?.webViewLink) {
-    console.log(`[notifier] Reporte disponible en Drive: ${driveInfo.webViewLink}`);
-  } else {
-    console.warn('[notifier] No se pudo subir a Drive. El reporte queda como artifact en Actions.');
-  }
-
-  return { drive: driveInfo, mail: { ok: false, error: 'Gmail API no configurada' } };
 }
 
 export default notify;

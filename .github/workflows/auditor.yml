@@ -21,6 +21,8 @@ jobs:
       SPREADSHEET_ID: 1QYT15W8NJ5M2UPVyvBy-QqfnOA4fEbTbbZfy7qrNLrY
       INPUT_SHEET: Hoja2
       OUTPUT_XLSX: Reporte_Auditoria_IA.xlsx
+      ONEDRIVE_USER: ${{ secrets.ONEDRIVE_USER }}
+      ONEDRIVE_PASS: ${{ secrets.ONEDRIVE_PASS }}
 
     steps:
       - name: Checkout

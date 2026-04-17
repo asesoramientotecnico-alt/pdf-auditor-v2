@@ -9,6 +9,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const NAV_TIMEOUT_MS = 60000;
 
 export async function launchBrowser() {
+  const isWindows = process.platform === 'win32';
   return puppeteer.launch({
     headless: 'new',
     ignoreHTTPSErrors: true,
@@ -16,8 +17,11 @@ export async function launchBrowser() {
       '--no-sandbox', '--disable-setuid-sandbox',
       '--ignore-certificate-errors', '--ignore-certificate-errors-spki-list',
       '--disable-dev-shm-usage', '--disable-gpu',
-      '--no-zygote', '--single-process',
-      '--disable-blink-features=AutomationControlled'
+      '--disable-blink-features=AutomationControlled',
+      '--disable-extensions',
+      '--no-first-run',
+      // --no-zygote y --single-process solo en Linux (rompen en Windows)
+      ...( isWindows ? [] : ['--no-zygote', '--single-process'] )
     ]
   });
 }

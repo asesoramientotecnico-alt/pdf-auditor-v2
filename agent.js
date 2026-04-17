@@ -5,25 +5,9 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
 
 // Prompt comprimido — mismo contenido, menos tokens
-const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
-
-Inputs:
-- texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
-- titulo_web: titulo publicado en famiq.com.ar
-- descripcion_web: texto descriptivo de la pagina
-- specs: tabla de especificaciones tecnicas
-- imagen adjunta (si disponible): primera foto del carrusel
-
-Validar:
-A) VISUAL (solo si hay imagen): la imagen corresponde al texto_comercial?
-B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
-C) TEXTO WEB vs specs: titulo_web y descripcion_web coinciden con specs?
-
-Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU.
-Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
-
-Responde SOLO JSON valido:
-{"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+const SYSTEM_PROMPT = `JSON ONLY. Audit product specs vs comercial text.
+Check: material, diameter, norm, connection match between comercial_text and specs.
+Respond ONLY: {"estado_visual":"COHERENTE"|"SIN_IMAGEN","analisis_visual":"ok|error","estado_tecnico":"OK"|"ERROR","validaciones":"text","discrepancias":"text","recomendaciones":"text","propuesta_correccion":"text"}`;
 
 async function fetchImageAsBase64(imageUrl) {
   if (!imageUrl) return null;

@@ -81,7 +81,7 @@ function sha256(buf) {
 }
 
 async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
-  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '' };
+  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtWeb: '' };
 
   // Construir URL completa del PDF web: base + nombre de archivo
   let urlWeb = '';
@@ -98,6 +98,7 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
     }
   }
 
+  result.urlFtWeb = urlWeb;
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
@@ -210,7 +211,8 @@ async function writeReport(filePath, results) {
     { header: 'Validaciones',                key: 'validaciones',    width: 65 },
     { header: 'Discrepancias',               key: 'discrepancias',   width: 65 },
     { header: 'Recomendaciones',             key: 'recomendaciones', width: 55 },
-    { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 }
+    { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 },
+    { header: 'Link FT Web',                 key: 'urlFtWeb',        width: 80 }
   ];
 
   const header = ws.getRow(1);
@@ -230,11 +232,11 @@ async function writeReport(filePath, results) {
   results.forEach((r) => {
     const row = ws.addRow({
       sku: r.sku, textoComercial: r.textoComercial, urlFamiq: r.urlProducto,
-      integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro,
+      integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro, urlFtWeb: r.urlFtWeb || '',
       estadoVisual: r.estadoVisual, analisisVisual: r.analisisVisual,
       estadoTecnico: r.estadoTecnico, validaciones: r.validaciones,
       discrepancias: r.discrepancias, recomendaciones: r.recomendaciones,
-      propuesta: r.propuesta
+      propuesta: r.propuesta, urlFtWeb: r.urlFtWeb || ''
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
@@ -249,6 +251,11 @@ async function writeReport(filePath, results) {
     if (r.urlProducto) {
       const c = row.getCell('urlFamiq');
       c.value = { text: r.urlProducto, hyperlink: r.urlProducto };
+    if (r.urlFtWeb) {
+      const cft = row.getCell('urlFtWeb');
+      cft.value = { text: r.urlFtWeb, hyperlink: r.urlFtWeb };
+      cft.font  = { color: { argb: 'FF0563C1' }, underline: true };
+    }
       c.font  = { color: { argb: 'FF0563C1' }, underline: true };
     }
   });
@@ -275,6 +282,7 @@ async function processRow(row, browser) {
     base.integridad  = pdf.integridad;
     base.hashWeb     = pdf.hashWeb;
     base.hashMaestro = pdf.hashMaestro;
+    base.urlFtWeb    = pdf.urlFtWeb || '';
     if (pdf.detalle && pdf.integridad !== 'OK') {
       base.discrepancias = `[PDF] ${pdf.detalle}`;
     }

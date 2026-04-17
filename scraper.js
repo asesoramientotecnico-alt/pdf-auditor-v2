@@ -1,6 +1,6 @@
 // scraper.js
 // famiq.com.ar es una SPA — datos via /producto/{id}/data?nodo=null
-// Extrae: titulo, especificaciones tecnicas, descripcion, imagen del carrusel (primera foto)
+// Imagen: captura de pantalla del carrusel real (como lo ve el usuario)
 
 import puppeteer from 'puppeteer';
 
@@ -36,11 +36,12 @@ export async function scrapeProduct(url, externalBrowser = null) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-AR,es;q=0.9' });
+    await page.setViewport({ width: 1280, height: 900 });
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
-    // Interceptar la llamada a /data?nodo=null
+    // Interceptar la llamada a /data?nodo=null para specs y titulo
     let productoData = null;
     page.on('response', async (response) => {
       const respUrl = response.url();
@@ -95,27 +96,58 @@ export async function scrapeProduct(url, externalBrowser = null) {
     const sku = productoData.codigo || productoData.sku || '';
     if (sku) especificaciones['__sku_web__'] = String(sku);
 
-    // ---- IMAGEN: primera foto del carrusel ----
-    // La API devuelve un campo 'imagenes' con array de URLs
-    let imagen = null;
-    const imgs = productoData.imagenes;
-    if (Array.isArray(imgs) && imgs.length > 0) {
-      const first = imgs[0];
-      // Puede ser un string URL o un objeto {url, src, path, imagen, nombre}
-      if (typeof first === 'string') {
-        imagen = first;
-      } else if (first && typeof first === 'object') {
-        imagen = first.url || first.src || first.path || first.imagen || first.nombre || null;
+    // ---- IMAGEN: captura de pantalla del carrusel tal como lo ve el usuario ----
+    // Esperar a que la imagen del producto se cargue visualmente
+    let imagenBase64 = null;
+    try {
+      // Esperar que aparezca el contenedor de imagen del producto
+      await page.waitForSelector(
+        '.product-gallery, .swiper, .swiper-slide, [class*="galeria"], [class*="carousel"], [class*="product"] img, main img',
+        { timeout: 10000 }
+      ).catch(() => {});
+
+      // Pausa adicional para que las imágenes terminen de cargar
+      await new Promise((r) => setTimeout(r, 2500));
+
+      // Intentar capturar solo el área del carrusel/imagen principal
+      const carouselSelectors = [
+        '.product-gallery',
+        '.swiper-container',
+        '.swiper',
+        '[class*="galeria"]',
+        '[class*="carousel"]',
+        '[class*="product-image"]',
+        '.woocommerce-product-gallery',
+      ];
+
+      let carouselElement = null;
+      for (const sel of carouselSelectors) {
+        carouselElement = await page.$(sel);
+        if (carouselElement) break;
       }
-      // Normalizar URL relativa
-      if (imagen && !imagen.startsWith('http')) {
-        imagen = `https://www.famiq.com.ar${imagen.startsWith('/') ? '' : '/'}${imagen}`;
+
+      if (carouselElement) {
+        // Captura recortada del carrusel
+        const screenshot = await carouselElement.screenshot({ type: 'jpeg', quality: 80 });
+        imagenBase64 = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
+        console.log(`[scraper] Screenshot carrusel OK (${Math.round(screenshot.length/1024)}KB)`);
+      } else {
+        // Fallback: captura de la mitad superior izquierda de la página (donde está la imagen)
+        const screenshot = await page.screenshot({
+          type: 'jpeg',
+          quality: 75,
+          clip: { x: 0, y: 150, width: 550, height: 550 }
+        });
+        imagenBase64 = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
+        console.log(`[scraper] Screenshot fallback (clip) OK (${Math.round(screenshot.length/1024)}KB)`);
       }
+    } catch (imgErr) {
+      console.warn(`[scraper] No se pudo capturar screenshot: ${imgErr?.message || imgErr}`);
     }
 
-    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagen ? 'SI' : 'NO'}`);
+    console.log(`[scraper] ${url} titulo="${titulo.slice(0,50)}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} imagen=${imagenBase64 ? 'SI' : 'NO'}`);
 
-    return { url, titulo, imagen, especificaciones };
+    return { url, titulo, imagen: imagenBase64, especificaciones };
 
   } catch (err) {
     return { url, titulo: '', imagen: null, especificaciones: {}, error: `Scraper error: ${err?.message || err}` };

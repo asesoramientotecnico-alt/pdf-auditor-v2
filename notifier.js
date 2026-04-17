@@ -48,12 +48,33 @@ async function getSiteId(token) {
   return res.data.id;
 }
 
+async function getDefaultDriveId(token, siteId) {
+  // Obtener el drive principal del sitio SharePoint
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/drives`;
+  const res = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 15000
+  });
+  // Usar el drive "Documents" o el primero disponible
+  const drives = res.data.value || [];
+  const doc = drives.find(d => d.name === 'Documents' || d.name === 'Documentos compartidos') || drives[0];
+  if (!doc) throw new Error('No se encontró ningún drive en el sitio');
+  console.log(`[notifier] Drive: ${doc.name} (${doc.id})`);
+  return doc.id;
+}
+
 async function uploadFile(token, siteId, localPath, remoteName) {
   const fileBuffer = fs.readFileSync(localPath);
-  const encodedFolder = encodeURIComponent(FOLDER_PATH);
+  const driveId = await getDefaultDriveId(token, siteId);
 
-  // Upload via PUT (hasta 4MB — el Excel del reporte es mucho menor)
-  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/drives/root:/${encodedFolder}/${remoteName}:/content`;
+  // La ruta debe ser relativa al root del drive (sin "Documentos compartidos")
+  const folderRelative = FOLDER_PATH.replace(/^Documentos compartidos\/?/, '');
+  const filePath = folderRelative ? `${folderRelative}/${remoteName}` : remoteName;
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encodedPath}:/content`;
+  console.log(`[notifier] URL upload: ${url.slice(0, 120)}...`);
+
   const res = await axios.put(url, fileBuffer, {
     headers: {
       Authorization: `Bearer ${token}`,

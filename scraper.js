@@ -1,7 +1,6 @@
 // scraper.js
-// famiq.com.ar es una SPA — el contenido se carga via API interna.
-// Estrategia: interceptar requests XHR/fetch para capturar la respuesta
-// de la API de producto, en lugar de parsear el DOM.
+// famiq.com.ar es una SPA que carga datos via /producto/{id}/data?nodo=null
+// Interceptamos esa respuesta directamente en lugar de parsear el DOM.
 
 import puppeteer from 'puppeteer';
 
@@ -14,14 +13,10 @@ export async function launchBrowser() {
     headless: 'new',
     ignoreHTTPSErrors: true,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--ignore-certificate-errors',
-      '--ignore-certificate-errors-spki-list',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--single-process',
+      '--no-sandbox', '--disable-setuid-sandbox',
+      '--ignore-certificate-errors', '--ignore-certificate-errors-spki-list',
+      '--disable-dev-shm-usage', '--disable-gpu',
+      '--no-zygote', '--single-process',
       '--disable-blink-features=AutomationControlled'
     ]
   });
@@ -30,10 +25,7 @@ export async function launchBrowser() {
 export async function scrapeProduct(url, externalBrowser = null) {
   let browser = externalBrowser;
   let ownsBrowser = false;
-  if (!browser) {
-    browser = await launchBrowser();
-    ownsBrowser = true;
-  }
+  if (!browser) { browser = await launchBrowser(); ownsBrowser = true; }
 
   const page = await browser.newPage();
   page.setDefaultTimeout(NAV_TIMEOUT_MS);
@@ -43,32 +35,24 @@ export async function scrapeProduct(url, externalBrowser = null) {
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'es-AR,es;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    });
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-AR,es;q=0.9' });
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
-    await page.setViewport({ width: 1366, height: 768 });
 
-    // Interceptar respuestas de la API interna
-    const apiResponses = [];
+    // Interceptar la llamada a /data?nodo=null
+    let productoData = null;
     page.on('response', async (response) => {
       const respUrl = response.url();
-      const status  = response.status();
-      // Capturar cualquier llamada JSON que parezca ser de producto
       if (
-        status === 200 &&
-        (respUrl.includes('/api/') || respUrl.includes('/producto') ||
-         respUrl.includes('producto') || respUrl.includes('product')) &&
-        !respUrl.includes('.js') && !respUrl.includes('.css')
+        response.status() === 200 &&
+        respUrl.includes('/data') &&
+        respUrl.includes('nodo=')
       ) {
         try {
           const ct = response.headers()['content-type'] || '';
           if (ct.includes('json')) {
-            const json = await response.json();
-            apiResponses.push({ url: respUrl, data: json });
+            productoData = await response.json();
           }
         } catch (_) {}
       }
@@ -76,122 +60,56 @@ export async function scrapeProduct(url, externalBrowser = null) {
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 
-    // Esperar que el JS haga sus llamadas a la API
-    await new Promise((r) => setTimeout(r, 6000));
+    // Esperar a que llegue la respuesta de la API (máx 15s)
+    const waitStart = Date.now();
+    while (!productoData && Date.now() - waitStart < 15000) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
-    // Intentar esperar que aparezca contenido en el DOM
-    try {
-      await page.waitForFunction(
-        () => {
-          const h1 = document.querySelector('h1');
-          return h1 && h1.textContent.trim().length > 3;
-        },
-        { timeout: 15000 }
-      );
-    } catch (_) {}
+    if (!productoData) {
+      console.warn(`[scraper] No se recibió /data para ${url}`);
+      return { url, titulo: '', imagen: null, especificaciones: {}, error: 'API /data no respondió' };
+    }
 
-    // Pausa extra
-    await new Promise((r) => setTimeout(r, 2000));
+    // Loguear estructura completa para debug (solo primera vez)
+    console.log(`[scraper] ${url} -> API keys: ${Object.keys(productoData).join(',')}`);
 
-    // Extraer desde el DOM (intent principal)
-    const domData = await page.evaluate(() => {
-      const textOf = (el) => (el ? el.textContent.trim().replace(/\s+/g, ' ') : '');
+    // Extraer campos del JSON de la API
+    const titulo = productoData.nombre || productoData.titulo || productoData.descripcion_corta || '';
 
-      let titulo = '';
-      for (const sel of ['h1.product_title','h1.entry-title','.product_title','h1']) {
-        const el = document.querySelector(sel);
-        if (el && textOf(el)) { titulo = textOf(el); break; }
-      }
+    const especificaciones = {};
 
-      const especificaciones = {};
-
-      document.querySelectorAll('table').forEach((table) => {
-        table.querySelectorAll('tr').forEach((tr) => {
-          const cells = Array.from(tr.querySelectorAll('th, td'));
-          if (cells.length === 2) {
-            const k = textOf(cells[0]); const v = textOf(cells[1]);
-            if (k && v && k.length < 120) especificaciones[k] = v;
-          }
-          if (cells.length === 4) {
-            const k1=textOf(cells[0]),v1=textOf(cells[1]),k2=textOf(cells[2]),v2=textOf(cells[3]);
-            if (k1&&v1&&k1.length<120) especificaciones[k1]=v1;
-            if (k2&&v2&&k2.length<120) especificaciones[k2]=v2;
-          }
-          if (cells.length > 4) {
-            for (let i=0;i+1<cells.length;i+=2) {
-              const k=textOf(cells[i]),v=textOf(cells[i+1]);
-              if (k&&v&&k.length<120) especificaciones[k]=v;
-            }
-          }
-        });
+    // caracteristicas es un array o un objeto con las specs técnicas
+    const caract = productoData.caracteristicas;
+    if (Array.isArray(caract)) {
+      caract.forEach((item) => {
+        // cada item puede ser {nombre, valor} o {label, value} o similar
+        const k = item.nombre || item.label || item.key || item.titulo || '';
+        const v = item.valor || item.value || item.descripcion || '';
+        if (k && v) especificaciones[k] = String(v);
       });
-
-      document.querySelectorAll('dl').forEach((dl) => {
-        const dts=dl.querySelectorAll('dt'), dds=dl.querySelectorAll('dd');
-        for (let i=0;i<Math.min(dts.length,dds.length);i++) {
-          const k=textOf(dts[i]),v=textOf(dds[i]);
-          if (k&&v&&!especificaciones[k]) especificaciones[k]=v;
-        }
-      });
-
-      const descEl = document.querySelector(
-        '#tab-description,.woocommerce-Tabs-panel--description,.product-description,.entry-content,.woocommerce-product-details__short-description'
-      );
-      if (descEl) {
-        const desc = textOf(descEl).slice(0,4000);
-        if (desc) especificaciones['__descripcion_larga__'] = desc;
-      }
-
-      const skuEl = document.querySelector('.sku,[itemprop="sku"]');
-      if (skuEl) especificaciones['__sku_web__'] = textOf(skuEl);
-
-      // Capturar todo el texto visible como fallback
-      const bodyText = document.body ? document.body.innerText.slice(0, 3000) : '';
-
-      return { titulo, especificaciones, bodyText };
-    });
-
-    // Si el DOM está vacío, intentar parsear desde respuestas de API interceptadas
-    let titulo       = domData.titulo;
-    let especificaciones = domData.especificaciones;
-
-    console.log(`[scraper] ${url} DOM: titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length} apiResponses=${apiResponses.length}`);
-
-    // Log de API responses para debug
-    if (apiResponses.length > 0) {
-      apiResponses.forEach(r => {
-        console.log(`  [api] ${r.url.slice(0,100)} keys=${Object.keys(r.data).slice(0,8).join(',')}`);
+    } else if (caract && typeof caract === 'object') {
+      Object.entries(caract).forEach(([k, v]) => {
+        if (k && v) especificaciones[k] = String(v);
       });
     }
 
-    // Si DOM vacío pero hay texto visible, usarlo como descripción
-    if (!titulo && domData.bodyText && domData.bodyText.length > 50) {
-      const lines = domData.bodyText.split('\n').map(l=>l.trim()).filter(l=>l.length>3);
-      titulo = lines[0] || '';
-      if (lines.length > 1) especificaciones['__descripcion_larga__'] = lines.slice(0,30).join(' | ');
-      console.log(`[scraper] fallback texto visible: "${titulo.slice(0,80)}"`);
+    // descripcion larga
+    const desc = productoData.descripcion_larga || productoData.descripcion || productoData.texto || '';
+    if (desc) especificaciones['__descripcion_larga__'] = String(desc).slice(0, 4000);
+
+    // SKU/codigo
+    const sku = productoData.codigo || productoData.sku || '';
+    if (sku) especificaciones['__sku_web__'] = String(sku);
+
+    // LOG primer producto completo para verificar estructura
+    if (Object.keys(especificaciones).length === 0) {
+      console.warn(`[scraper] specs vacías. Muestra de datos API: ${JSON.stringify(productoData).slice(0, 400)}`);
+    } else {
+      console.log(`[scraper] titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length}: ${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).slice(0,5).join(',')}`);
     }
 
-    // Si hay respuestas de API, extraer campos del producto
-    if ((!titulo || Object.keys(especificaciones).length === 0) && apiResponses.length > 0) {
-      for (const resp of apiResponses) {
-        const d = resp.data;
-        // Intentar campos comunes de APIs de productos
-        if (d.nombre || d.name || d.titulo || d.title) {
-          titulo = d.nombre || d.name || d.titulo || d.title || titulo;
-        }
-        if (d.especificaciones || d.attributes || d.specs) {
-          const specs = d.especificaciones || d.attributes || d.specs;
-          if (typeof specs === 'object') Object.assign(especificaciones, specs);
-        }
-        if (d.descripcion || d.description) {
-          especificaciones['__descripcion_larga__'] = String(d.descripcion || d.description).slice(0,4000);
-        }
-      }
-      console.log(`[scraper] API fallback: titulo="${titulo}" specs=${Object.keys(especificaciones).filter(k=>!k.startsWith('__')).length}`);
-    }
-
-    return { url, titulo: titulo||'', imagen: null, especificaciones };
+    return { url, titulo, imagen: null, especificaciones };
 
   } catch (err) {
     return { url, titulo:'', imagen:null, especificaciones:{}, error:`Scraper error: ${err?.message||err}` };

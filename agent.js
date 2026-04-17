@@ -9,49 +9,83 @@ Tu trabajo es auditar fichas de producto publicadas en la web y detectar errores
 antes de que lleguen al cliente final. Sos estricto, concreto y no inventas datos.
 
 Se te entrega:
-- texto_comercial_maestro: el nombre/descripcion oficial del producto segun el sistema interno de Famiq.
-- titulo_web: el titulo tal como aparece publicado en famiq.com.ar.
-- descripcion_larga_web: el texto descriptivo publicado en la pagina del producto.
+- texto_comercial_maestro: descripcion oficial del producto segun el sistema interno de Famiq. ES LA FUENTE DE VERDAD.
+- titulo_web: titulo publicado en famiq.com.ar.
+- descripcion_larga_web: texto descriptivo publicado en la pagina.
 - especificaciones_tecnicas: tabla de atributos tecnicos extraida de la pagina (medidas, normas, materiales, etc.).
+- imagen_disponible: true/false — si hay imagen del carrusel para analizar visualmente.
 
-Tenes que validar DOS cosas:
+Cuando imagen_disponible=true, se incluye la imagen del carrusel como primer elemento del mensaje.
 
-A) CONSISTENCIA TEXTO COMERCIAL vs ESPECIFICACIONES TECNICAS:
-   - Los valores numericos, materiales, normas y calibres de la tabla de especificaciones coinciden
-     con lo que dice el texto_comercial_maestro?
-   - Revisar especialmente: material (304/304L/316/316L), diametro/calibre (DN, pulgadas, mm),
-     norma (DAN/DIN 11851/IEC/IRAM), tipo de conexion (roscada, soldada, clamp).
-   - Ejemplo de ERROR: texto_comercial_maestro dice "304L" pero especificaciones dicen "Material: AISI 316".
-   - Ejemplo de ERROR: texto_comercial_maestro dice "DN040" pero especificaciones dicen "Diametro: DN025".
+Tenes que validar TRES cosas:
 
-B) CONSISTENCIA TEXTO WEB vs ESPECIFICACIONES TECNICAS:
-   - El titulo_web y la descripcion_larga_web coinciden con la tabla de especificaciones de esa pagina?
-   - Detectar casos donde el texto web describe un producto pero las specs pertenecen a otro SKU.
-   - Detectar si el titulo_web no coincide con el texto_comercial_maestro (posible producto mal cargado).
+A) COHERENCIA VISUAL (solo si hay imagen):
+   - El producto que se ve en la imagen corresponde al texto_comercial_maestro?
+   - Ejemplo de ERROR: texto dice "STUB END para soldar 316L" pero la imagen muestra una valvula.
+   - Detectar si la imagen parece ser de otro producto o familia completamente diferente.
+   - Si no hay imagen: estado_visual = "SIN_IMAGEN".
 
-ANOMALIAS A DETECTAR:
+B) CONSISTENCIA TEXTO COMERCIAL vs ESPECIFICACIONES TECNICAS:
+   - Los valores numericos, materiales, normas y calibres de la tabla coinciden con texto_comercial_maestro?
+   - Revisar: material (304/304L/316/316L), diametro/calibre (DN, mm, pulgadas),
+     norma (DAN/DIN 11851/SMS/IEC/IRAM/SCH), tipo de conexion (roscada, soldada, clamp, stub end).
+   - Ejemplo ERROR: maestro dice "316L" pero specs dicen "Calidad: 304".
+   - Ejemplo ERROR: maestro dice "73,0 x 3,05 mm" pero specs dicen "Diametro: 50,8 mm".
+
+C) CONSISTENCIA TITULO WEB vs ESPECIFICACIONES TECNICAS:
+   - El titulo_web y descripcion_larga_web coinciden con la tabla de la pagina?
+   - Detectar si titulo_web difiere significativamente del texto_comercial_maestro.
+
+ANOMALIAS CRITICAS A DETECTAR:
 - Material incorrecto (304 vs 304L vs 316 vs 316L).
-- Diametro/calibre incorrecto o inconsistente entre texto y specs.
-- Norma tecnica incorrecta (ej: dice DAN pero specs dicen DIN 11851).
-- Titulo web distinto al texto comercial maestro (posible SKU equivocado).
-- Especificaciones vacias o insuficientes (faltan datos clave como material, diametro o norma).
-- Descripcion larga que no corresponde al producto del titulo.
+- Diametro/espesor de pared incorrecto.
+- Norma tecnica incorrecta.
+- Titulo web que no corresponde al texto comercial maestro.
+- Imagen de otro producto o familia.
+- Especificaciones vacias o de otro SKU.
 
-RECOMENDACIONES (no son errores criticos pero conviene corregir):
-- Titulo web mal redactado o abreviado respecto al texto comercial maestro.
-- Especificaciones incompletas (faltan campos como presion de trabajo, temperatura, acabado).
-- Descripcion larga demasiado generica o copiada de otro producto similar.
+RECOMENDACIONES (no criticas pero conviene corregir):
+- Titulo web mal redactado o incompleto vs texto comercial maestro.
+- Especificaciones incompletas (falta presion trabajo, temperatura, acabado superficial).
+- Descripcion larga generica o copiada de otro producto.
 
 REGLAS DE SALIDA:
 - Respondes EXCLUSIVAMENTE con un unico objeto JSON valido, sin texto extra, sin Markdown.
 - Esquema EXACTO:
 {
+  "estado_visual": "COHERENTE" | "ERROR" | "SIN_IMAGEN",
+  "analisis_visual": "que muestra la imagen y si corresponde al producto, o 'Sin imagen disponible'",
   "estado_tecnico": "OK" | "ERROR",
-  "validaciones": "tabla de lo que comparaste: 'diametro_mm: maestro=152.4 tabla=152.4 OK | material: maestro=304 tabla=304 OK | norma: maestro=DAN tabla=DANESA OK' — siempre completar aunque todo este OK",
-  "discrepancias": "lista detallada de discrepancias encontradas, o Sin discrepancias",
-  "recomendaciones": "sugerencias de mejora aunque no sean errores criticos, o Sin recomendaciones",
+  "validaciones": "campo por campo: 'material: maestro=316L tabla=316L OK | diametro: maestro=73.0mm tabla=73.0mm OK | norma: maestro=SCH.10 tabla=SCH10 OK'",
+  "discrepancias": "lista detallada de discrepancias, o Sin discrepancias",
+  "recomendaciones": "sugerencias de mejora, o Sin recomendaciones",
   "propuesta_correccion": "que corregir exactamente, o No requiere correccion"
 }`;
+
+async function fetchImageAsBase64(imageUrl) {
+  if (!imageUrl) return null;
+  try {
+    const res = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxContentLength: 4 * 1024 * 1024,
+      validateStatus: (s) => s >= 200 && s < 400,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    const buf = Buffer.from(res.data);
+    // Limitar a 3.5MB para no exceder límite de Anthropic
+    if (buf.length > 3.5 * 1024 * 1024) {
+      console.warn(`[agent] Imagen grande (${(buf.length/1024/1024).toFixed(1)}MB), auditando sin imagen`);
+      return null;
+    }
+    let mimeType = (res.headers['content-type'] || '').split(';')[0].trim();
+    if (!mimeType.startsWith('image/')) mimeType = 'image/jpeg';
+    return { data: buf.toString('base64'), mimeType };
+  } catch (err) {
+    console.warn(`[agent] No se pudo obtener imagen: ${err?.message || err}`);
+    return null;
+  }
+}
 
 function safeParseJson(text) {
   if (!text) return null;
@@ -68,7 +102,7 @@ function safeParseJson(text) {
 function normalizeResult(raw) {
   const result = {
     estado_visual:        'SIN_IMAGEN',
-    analisis_visual:      'Auditoria de texto (sin imagen).',
+    analisis_visual:      'Sin imagen disponible.',
     estado_tecnico:       'ERROR',
     discrepancias:        '',
     validaciones:         '',
@@ -76,17 +110,20 @@ function normalizeResult(raw) {
     propuesta_correccion: ''
   };
   if (!raw || typeof raw !== 'object') return result;
+  const visual = String(raw.estado_visual || '').toUpperCase();
+  if (visual === 'COHERENTE') result.estado_visual = 'COHERENTE';
+  else if (visual === 'ERROR') result.estado_visual = 'ERROR';
+  else result.estado_visual = 'SIN_IMAGEN';
+  result.analisis_visual      = String(raw.analisis_visual      || '').trim();
+  result.estado_tecnico       = String(raw.estado_tecnico       || '').toUpperCase() === 'OK' ? 'OK' : 'ERROR';
   result.validaciones         = String(raw.validaciones         || '').trim();
-  result.estado_tecnico       = String(raw.estado_tecnico || '').toUpperCase() === 'OK' ? 'OK' : 'ERROR';
   result.discrepancias        = String(raw.discrepancias        || '').trim();
   result.recomendaciones      = String(raw.recomendaciones      || '').trim();
   result.propuesta_correccion = String(raw.propuesta_correccion || '').trim();
   return result;
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 export async function auditScrape(scrape, opts = {}) {
   const apiKey = opts.apiKey || process.env.ANTHROPIC_API_KEY;
@@ -109,17 +146,35 @@ export async function auditScrape(scrape, opts = {}) {
   const especificacionesLimpias = { ...(scrape.especificaciones || {}) };
   const descripcionLarga = especificacionesLimpias.__descripcion_larga__ || '';
   delete especificacionesLimpias.__descripcion_larga__;
+  delete especificacionesLimpias.__sku_web__;
+
+  // Intentar obtener imagen
+  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
+
+  const userTextContent = {
+    texto_comercial_maestro:   opts.descripcionMaestra || '',
+    titulo_web:                scrape.titulo || '',
+    url:                       scrape.url || '',
+    descripcion_larga_web:     descripcionLarga,
+    especificaciones_tecnicas: especificacionesLimpias,
+    imagen_disponible:         img !== null
+  };
 
   const userText =
     'Auditar la siguiente ficha de producto de famiq.com.ar.\n' +
-    JSON.stringify({
-      texto_comercial_maestro:   opts.descripcionMaestra || '',
-      titulo_web:                scrape.titulo || '',
-      url:                       scrape.url || '',
-      descripcion_larga_web:     descripcionLarga,
-      especificaciones_tecnicas: especificacionesLimpias
-    }, null, 2) +
+    JSON.stringify(userTextContent, null, 2) +
     '\n\nResponde UNICAMENTE con el JSON del esquema indicado.';
+
+  // Construir partes del mensaje — imagen primero si existe
+  let messageContent;
+  if (img) {
+    messageContent = [
+      { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } },
+      { type: 'text', text: userText }
+    ];
+  } else {
+    messageContent = userText;
+  }
 
   const MAX_RETRIES = 4;
   const RETRY_CODES = new Set([429, 529, 503, 502]);
@@ -133,10 +188,10 @@ export async function auditScrape(scrape, opts = {}) {
           model:      MODEL,
           max_tokens: 1024,
           system:     SYSTEM_PROMPT,
-          messages:   [{ role: 'user', content: userText }]
+          messages:   [{ role: 'user', content: messageContent }]
         },
         {
-          timeout: 30000,
+          timeout: 45000,
           headers: {
             'Content-Type':      'application/json',
             'x-api-key':         apiKey,
@@ -161,9 +216,8 @@ export async function auditScrape(scrape, opts = {}) {
       const status  = err?.response?.status;
       const errBody = err?.response?.data ? JSON.stringify(err.response.data) : '';
       console.warn(`[agent] Claude ${status} intento ${attempt}/${MAX_RETRIES}: ${errBody.slice(0, 200)}`);
-
       if (RETRY_CODES.has(status) && attempt < MAX_RETRIES) {
-        const waitMs = 10000 * attempt; // 10s, 20s, 30s
+        const waitMs = 10000 * attempt;
         console.warn(`[agent] Esperando ${waitMs / 1000}s...`);
         await sleep(waitMs);
         continue;
@@ -182,7 +236,3 @@ export async function auditScrape(scrape, opts = {}) {
 }
 
 export default auditScrape;
-
-
-
-

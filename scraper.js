@@ -40,102 +40,103 @@ export async function scrapeProduct(url, externalBrowser = null) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
     );
 
-    // networkidle2 espera que el JS termine de renderizar
     await page.goto(url, { waitUntil: 'networkidle2', timeout: NAV_TIMEOUT_MS });
 
-    // Esperar específicamente la tabla de información técnica de famiq
-    // o cualquier h1 como fallback
+    // Esperar tabla o h1
     try {
-      await page.waitForSelector(
-        'table, .informacion-tecnica, .product-attributes, h1, .product_title',
-        { timeout: WAIT_TIMEOUT_MS }
-      );
+      await page.waitForSelector('table, h1, .product_title', { timeout: WAIT_TIMEOUT_MS });
     } catch (_) {}
 
-    // Pequeña pausa adicional para asegurar render completo de tablas JS
-    await new Promise((r) => setTimeout(r, 2000));
+    // Pausa para render JS completo
+    await new Promise((r) => setTimeout(r, 2500));
 
     const data = await page.evaluate(() => {
       const textOf = (el) => (el ? el.textContent.trim().replace(/\s+/g, ' ') : '');
 
       // --- Titulo ---
-      const titleSelectors = [
-        'h1.product_title', 'h1.entry-title', '.product_title', 'h1'
-      ];
       let titulo = '';
-      for (const sel of titleSelectors) {
+      for (const sel of ['h1.product_title','h1.entry-title','.product_title','h1']) {
         const el = document.querySelector(sel);
         if (el && textOf(el)) { titulo = textOf(el); break; }
       }
 
-      // --- Especificaciones tecnicas ---
-      // famiq.com.ar usa tablas con 4 columnas: label | valor | label | valor
+      // --- DEBUG: capturar estructura real de tablas ---
+      const debugTablas = [];
+      document.querySelectorAll('table').forEach((table, ti) => {
+        const rows = [];
+        table.querySelectorAll('tr').forEach((tr) => {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map(c => textOf(c));
+          if (cells.some(c => c)) rows.push(cells);
+        });
+        if (rows.length > 0) debugTablas.push({ tabla: ti, clase: table.className, rows: rows.slice(0, 5) });
+      });
+
+      // --- Especificaciones ---
       const especificaciones = {};
 
       document.querySelectorAll('table').forEach((table) => {
         table.querySelectorAll('tr').forEach((tr) => {
           const cells = Array.from(tr.querySelectorAll('th, td'));
 
-          // Caso 1: tabla de 2 columnas (label | valor)
           if (cells.length === 2) {
             const k = textOf(cells[0]);
             const v = textOf(cells[1]);
             if (k && v && k.length < 120) especificaciones[k] = v;
           }
-
-          // Caso 2: tabla de 4 columnas (label | valor | label | valor)
-          // que es el formato de famiq.com.ar en "Información técnica"
           if (cells.length === 4) {
-            const k1 = textOf(cells[0]);
-            const v1 = textOf(cells[1]);
-            const k2 = textOf(cells[2]);
-            const v2 = textOf(cells[3]);
+            const k1 = textOf(cells[0]); const v1 = textOf(cells[1]);
+            const k2 = textOf(cells[2]); const v2 = textOf(cells[3]);
             if (k1 && v1 && k1.length < 120) especificaciones[k1] = v1;
             if (k2 && v2 && k2.length < 120) especificaciones[k2] = v2;
           }
-
-          // Caso 3: más columnas, procesar pares
-          if (cells.length > 4 && cells.length % 2 === 0) {
-            for (let i = 0; i < cells.length; i += 2) {
-              const k = textOf(cells[i]);
-              const v = textOf(cells[i + 1]);
+          if (cells.length > 4) {
+            for (let i = 0; i + 1 < cells.length; i += 2) {
+              const k = textOf(cells[i]); const v = textOf(cells[i+1]);
               if (k && v && k.length < 120) especificaciones[k] = v;
             }
           }
         });
       });
 
-      // Listas de definiciones (dl/dt/dd)
+      // dl/dt/dd
       document.querySelectorAll('dl').forEach((dl) => {
         const dts = dl.querySelectorAll('dt');
         const dds = dl.querySelectorAll('dd');
         for (let i = 0; i < Math.min(dts.length, dds.length); i++) {
-          const k = textOf(dts[i]);
-          const v = textOf(dds[i]);
+          const k = textOf(dts[i]); const v = textOf(dds[i]);
           if (k && v && !especificaciones[k]) especificaciones[k] = v;
         }
       });
 
       // Descripcion larga
-      const descripcionEl = document.querySelector(
+      const descEl = document.querySelector(
         '#tab-description, .woocommerce-Tabs-panel--description, .product-description, .entry-content, .woocommerce-product-details__short-description'
       );
-      if (descripcionEl) {
-        const desc = textOf(descripcionEl).slice(0, 4000);
+      if (descEl) {
+        const desc = textOf(descEl).slice(0, 4000);
         if (desc) especificaciones['__descripcion_larga__'] = desc;
       }
 
-      // SKU publicado (para detectar discrepancias)
+      // SKU web
       const skuEl = document.querySelector('.sku, [itemprop="sku"]');
       if (skuEl) especificaciones['__sku_web__'] = textOf(skuEl);
 
-      return { titulo, especificaciones };
+      return { titulo, especificaciones, debugTablas };
+    });
+
+    // LOG DE DEBUG - solo primeras 2 filas para no saturar
+    console.log(`[scraper] ${url}`);
+    console.log(`[scraper] titulo="${data.titulo}" specs_keys=${Object.keys(data.especificaciones).filter(k=>!k.startsWith('__')).join(',')}`);
+    console.log(`[scraper] tablas encontradas: ${data.debugTablas.length}`);
+    data.debugTablas.slice(0, 3).forEach(t => {
+      console.log(`  tabla[${t.tabla}] clase="${t.clase}" rows=${t.rows.length}`);
+      t.rows.slice(0, 2).forEach(r => console.log(`    fila: ${JSON.stringify(r)}`));
     });
 
     return {
       url,
       titulo:           data.titulo || '',
-      imagen:           null,  // imagen deshabilitada
+      imagen:           null,
       especificaciones: data.especificaciones || {}
     };
 

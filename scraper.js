@@ -22,7 +22,7 @@ export async function launchBrowser() {
   });
 }
 
-export async function scrapeProduct(url, externalBrowser = null) {
+export async function scrapeProduct(url, externalBrowser = null, urlImagenDirecta = null) {
   let browser = externalBrowser;
   let ownsBrowser = false;
   if (!browser) { browser = await launchBrowser(); ownsBrowser = true; }
@@ -94,33 +94,19 @@ export async function scrapeProduct(url, externalBrowser = null) {
     const sku = productoData.codigo || productoData.sku || '';
     if (sku) especificaciones['__sku_web__'] = String(sku);
 
-    // ---- IMAGEN: loguear estructura real de imagenes[] para saber el formato ----
-    const imgs = productoData.imagenes;
-    console.log(`[img-debug] tipo imagenes: ${typeof imgs} | isArray: ${Array.isArray(imgs)} | length: ${Array.isArray(imgs) ? imgs.length : 'N/A'}`);
-    if (Array.isArray(imgs) && imgs.length > 0) {
-      console.log(`[img-debug] imgs[0] tipo: ${typeof imgs[0]}`);
-      console.log(`[img-debug] imgs[0] valor: ${JSON.stringify(imgs[0]).slice(0, 300)}`);
-      if (imgs.length > 1) console.log(`[img-debug] imgs[1] valor: ${JSON.stringify(imgs[1]).slice(0, 200)}`);
-    }
-
-    // Extraer URL de imagen probando todos los campos posibles
-    let imagen = null;
-    if (Array.isArray(imgs) && imgs.length > 0) {
-      const first = imgs[0];
-      if (typeof first === 'string') {
-        imagen = first;
-      } else if (first && typeof first === 'object') {
-        // Loguear todas las keys del primer objeto
-        console.log(`[img-debug] keys de imgs[0]: ${Object.keys(first).join(', ')}`);
-        imagen = first.url || first.src || first.path || first.imagen ||
-                 first.nombre || first.file || first.href || first.link ||
-                 first.thumbnail || first.original || first.full ||
-                 Object.values(first).find(v => typeof v === 'string' && v.match(/\.(jpg|jpeg|png|webp)/i)) ||
-                 null;
-      }
-      if (imagen && !imagen.startsWith('http')) {
-        // Usar path /uploads/materiales/chica/ — imágenes optimizadas, más livianas
-        imagen = `https://www.famiq.com.ar/uploads/materiales/chica/${imagen}`;
+    // Imagen: usar URL directa de col M si está disponible
+    // Si no, intentar construirla desde imagenes[] de la API
+    let imagen = urlImagenDirecta || null;
+    if (!imagen) {
+      const imgs = productoData.imagenes;
+      if (Array.isArray(imgs) && imgs.length > 0) {
+        const first = imgs[0];
+        const nombre = typeof first === 'string' ? first : (first?.url || first?.nombre || null);
+        if (nombre && !nombre.startsWith('http')) {
+          imagen = `https://www.famiq.com.ar/uploads/materiales/chica/${nombre}`;
+        } else if (nombre) {
+          imagen = nombre;
+        }
       }
     }
 
@@ -137,4 +123,5 @@ export async function scrapeProduct(url, externalBrowser = null) {
 }
 
 export default scrapeProduct;
+
 

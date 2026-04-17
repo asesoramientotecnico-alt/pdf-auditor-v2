@@ -1,18 +1,4 @@
 // index.js
-// Orquestador principal del Agente Auditor de Calidad Web.
-//
-// Flujo:
-//  1. Lee el Google Sheet (hoja configurada via INPUT_SHEET) via Sheets API con cuenta de servicio.
-//  2. Por cada fila (concurrencia configurable con p-limit):
-//       a. Descarga el PDF publicado (col 9) y el PDF maestro de Drive (col 11).
-//       b. Compara SHA-256 y marca "Integridad PDF".
-//       c. Scrapea la URL de producto (col 6) con Puppeteer.
-//       d. Envia el resultado al Inspector IA (agent.js / Gemini).
-//       e. Guarda el resultado en memoria.
-//  3. Usa checkpoint.json para reanudar si el proceso se corta.
-//  4. Genera Reporte_Auditoria_IA.xlsx con columna extra "Recomendaciones".
-//  5. Invoca notifier.js para subir el Excel a Drive.
-
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -33,10 +19,34 @@ const INPUT_SHEET     = process.env.INPUT_SHEET     || 'Hoja2';
 const OUTPUT_XLSX     = process.env.OUTPUT_XLSX     || 'Reporte_Auditoria_IA.xlsx';
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
 const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '5', 10);
+// Máximo de llamadas a Gemini por minuto (límite pago: 10 RPM para Flash)
+// Usamos 8 para dejar margen de seguridad
+const GEMINI_RPM      = parseInt(process.env.GEMINI_RPM || '8', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
+
+// -------------------- Semáforo Gemini --------------------
+// Controla que no se envíen más de GEMINI_RPM requests por minuto a Gemini,
+// independientemente de cuántas filas se procesen en paralelo.
+
+const geminiSlots = pLimit(1); // solo 1 request a Gemini a la vez
+const GEMINI_INTERVAL_MS = Math.ceil(60000 / GEMINI_RPM); // ms entre requests
+
+let lastGeminiCall = 0;
+
+async function rateLimitedAudit(scrape, opts) {
+  return geminiSlots(async () => {
+    const now = Date.now();
+    const elapsed = now - lastGeminiCall;
+    if (elapsed < GEMINI_INTERVAL_MS) {
+      await new Promise((r) => setTimeout(r, GEMINI_INTERVAL_MS - elapsed));
+    }
+    lastGeminiCall = Date.now();
+    return auditScrape(scrape, opts);
+  });
+}
 
 // -------------------- utilidades --------------------
 
@@ -45,18 +55,12 @@ function col(row, oneBasedIndex) {
   return v == null ? '' : String(v).trim();
 }
 
-/**
- * Convierte un link tipo https://drive.google.com/file/d/ID/view?usp=drive_link
- * a https://drive.google.com/uc?export=download&id=ID
- */
 export function normalizeDriveUrl(url) {
   if (!url) return '';
   const s = String(url).trim();
   if (!s) return '';
   const m = s.match(/\/file\/d\/([^/]+)/) || s.match(/[?&]id=([^&]+)/);
-  if (m && m[1]) {
-    return `https://drive.google.com/uc?export=download&id=${m[1]}`;
-  }
+  if (m && m[1]) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
   return s;
 }
 
@@ -68,8 +72,7 @@ async function downloadBuffer(url, { timeout = 120000 } = {}) {
     httpsAgent: insecureAgent,
     validateStatus: (s) => s >= 200 && s < 400,
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
     }
   });
   return Buffer.from(res.data);
@@ -79,12 +82,6 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-/**
- * Descarga los dos PDFs, calcula hashes SHA-256 y compara.
- * - OK: mismo hash (PDF web == PDF maestro Drive).
- * - DESACTUALIZADO: hashes distintos (el PDF web no coincide con el maestro).
- * - ERROR: no se pudo descargar alguno de los dos.
- */
 async function checkPdfIntegrity(urlWeb, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '' };
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
@@ -107,18 +104,14 @@ async function checkPdfIntegrity(urlWeb, urlDriveRaw) {
   }
 
   if (result.hashWeb && result.hashMaestro) {
-    if (result.hashWeb === result.hashMaestro) {
-      result.integridad = 'OK';
-      result.detalle = 'Hash SHA-256 coincide.';
-    } else {
-      result.integridad = 'DESACTUALIZADO';
-      result.detalle = 'El PDF publicado NO coincide con el maestro de Drive.';
-    }
+    result.integridad = result.hashWeb === result.hashMaestro ? 'OK' : 'DESACTUALIZADO';
+    result.detalle = result.integridad === 'OK'
+      ? 'Hash SHA-256 coincide.'
+      : 'El PDF publicado NO coincide con el maestro de Drive.';
   } else {
     result.integridad = 'ERROR';
     result.detalle = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
   }
-
   return result;
 }
 
@@ -127,12 +120,11 @@ async function checkPdfIntegrity(urlWeb, urlDriveRaw) {
 function loadCheckpoint() {
   try {
     if (fs.existsSync(CHECKPOINT_FILE)) {
-      const raw = fs.readFileSync(CHECKPOINT_FILE, 'utf8');
-      const json = JSON.parse(raw);
-      if (json && typeof json === 'object' && json.results) return json;
+      const json = JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
+      if (json?.results) return json;
     }
   } catch (err) {
-    console.warn(`[checkpoint] No se pudo leer ${CHECKPOINT_FILE}: ${err?.message || err}`);
+    console.warn(`[checkpoint] No se pudo leer: ${err?.message || err}`);
   }
   return { results: {} };
 }
@@ -141,7 +133,7 @@ function saveCheckpoint(state) {
   try {
     fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(state, null, 2), 'utf8');
   } catch (err) {
-    console.warn(`[checkpoint] No se pudo escribir ${CHECKPOINT_FILE}: ${err?.message || err}`);
+    console.warn(`[checkpoint] No se pudo escribir: ${err?.message || err}`);
   }
 }
 
@@ -150,29 +142,24 @@ function saveCheckpoint(state) {
 async function readSheetRows(spreadsheetId, sheetName) {
   const auth = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
   const sheets = google.sheets({ version: 'v4', auth });
-
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: sheetName,
     valueRenderOption: 'UNFORMATTED_VALUE',
     dateTimeRenderOption: 'FORMATTED_STRING'
   });
-
   const rawRows = resp.data.values || [];
   if (rawRows.length === 0) throw new Error(`La hoja "${sheetName}" esta vacia.`);
 
-  // Fila 0 = cabecera; filas siguientes = datos.
   const rows = [];
   rawRows.slice(1).forEach((r, i) => {
-    const rowNumber  = i + 2;
-    const id         = col(r, 1);
-    const sku        = col(r, 2);
-    // col 3: texto comercial maestro (nombre oficial del producto en el sistema interno)
+    const rowNumber   = i + 2;
+    const id          = col(r, 1);
+    const sku         = col(r, 2);
     const descripcion = col(r, 3);
     const urlProducto = col(r, 6);
     const urlFtWeb    = col(r, 9);
     const linkFtDrive = col(r, 11);
-
     if (!id && !sku && !urlProducto && !urlFtWeb && !linkFtDrive) return;
     rows.push({ rowNumber, id, sku, descripcion, urlProducto, urlFtWeb, linkFtDrive });
   });
@@ -202,48 +189,38 @@ async function writeReport(filePath, results) {
     { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 }
   ];
 
-  // Cabecera
   const header = ws.getRow(1);
   header.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
   header.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   header.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E78' } };
   header.height    = 30;
 
-  const paint = (cell, argb) => {
-    if (!argb) return;
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
-  };
-
   const colorFor = (val) => {
     if (!val) return null;
-    if (['OK', 'COHERENTE'].includes(val))    return 'FFC6EFCE'; // verde
-    if (val === 'DESACTUALIZADO')             return 'FFFFEB9C'; // amarillo
-    if (val === 'SIN_IMAGEN')                 return 'FFDCE6F1'; // azul claro
-    return 'FFFFC7CE'; // rojo
+    if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';
+    if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';
+    if (val === 'SIN_IMAGEN')              return 'FFDCE6F1';
+    return 'FFFFC7CE';
   };
 
   results.forEach((r) => {
     const row = ws.addRow({
-      sku:             r.sku,
-      descripcion:     r.descripcion,
-      urlFamiq:        r.urlProducto,
-      integridad:      r.integridad,
-      hashWeb:         r.hashWeb,
-      hashMaestro:     r.hashMaestro,
-      estadoVisual:    r.estadoVisual,
-      analisisVisual:  r.analisisVisual,
-      estadoTecnico:   r.estadoTecnico,
-      discrepancias:   r.discrepancias,
-      recomendaciones: r.recomendaciones,
-      propuesta:       r.propuesta
+      sku: r.sku, descripcion: r.descripcion, urlFamiq: r.urlProducto,
+      integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro,
+      estadoVisual: r.estadoVisual, analisisVisual: r.analisisVisual,
+      estadoTecnico: r.estadoTecnico, discrepancias: r.discrepancias,
+      recomendaciones: r.recomendaciones, propuesta: r.propuesta
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
-    paint(row.getCell('integridad'),   colorFor(r.integridad));
-    paint(row.getCell('estadoVisual'), colorFor(r.estadoVisual));
-    paint(row.getCell('estadoTecnico'),colorFor(r.estadoTecnico));
+    const paint = (key, argb) => {
+      if (!argb) return;
+      row.getCell(key).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
+    };
+    paint('integridad',   colorFor(r.integridad));
+    paint('estadoVisual', colorFor(r.estadoVisual));
+    paint('estadoTecnico',colorFor(r.estadoTecnico));
 
-    // Pintar celda URL como hipervínculo
     if (r.urlProducto) {
       const c = row.getCell('urlFamiq');
       c.value = { text: r.urlProducto, hyperlink: r.urlProducto };
@@ -253,7 +230,6 @@ async function writeReport(filePath, results) {
 
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
   ws.views = [{ state: 'frozen', ySplit: 1 }];
-
   await wb.xlsx.writeFile(filePath);
 }
 
@@ -261,21 +237,13 @@ async function writeReport(filePath, results) {
 
 async function processRow(row, browser) {
   const base = {
-    sku:             row.sku,
-    descripcion:     row.descripcion,
-    urlProducto:     row.urlProducto,
-    integridad:      'ERROR',
-    hashWeb:         '',
-    hashMaestro:     '',
-    estadoVisual:    'ERROR',
-    analisisVisual:  '',
-    estadoTecnico:   'ERROR',
-    discrepancias:   '',
-    recomendaciones: '',
-    propuesta:       ''
+    sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
+    integridad: 'ERROR', hashWeb: '', hashMaestro: '',
+    estadoVisual: 'ERROR', analisisVisual: '',
+    estadoTecnico: 'ERROR', discrepancias: '', recomendaciones: '', propuesta: ''
   };
 
-  // 1) Integridad PDF: SHA-256 del PDF web vs PDF maestro en Drive
+  // 1) Integridad PDF
   try {
     const pdf = await checkPdfIntegrity(row.urlFtWeb, row.linkFtDrive);
     base.integridad  = pdf.integridad;
@@ -289,32 +257,24 @@ async function processRow(row, browser) {
     base.discrepancias = `[PDF] ${err?.message || err}`;
   }
 
-  // 2) Scrape de la pagina del producto
-  let scrape = null;
-  if (row.urlProducto) {
-    scrape = await scrapeProduct(row.urlProducto, browser);
-  } else {
-    scrape = { error: 'Fila sin URL de producto.' };
-  }
+  // 2) Scrape
+  const scrape = row.urlProducto
+    ? await scrapeProduct(row.urlProducto, browser)
+    : { error: 'Fila sin URL de producto.' };
 
-  // 3) Auditoria IA con Gemini:
-  //    - Compara imagen web con texto_comercial_maestro (col 3 del sheet)
-  //    - Compara especificaciones tecnicas con texto_comercial_maestro
-  //    - Compara especificaciones tecnicas con titulo/descripcion web
-  const audit = await auditScrape(scrape, { descripcionMaestra: row.descripcion });
+  // 3) Auditoria Gemini — con rate limiter (max GEMINI_RPM por minuto)
+  const audit = await rateLimitedAudit(scrape, { descripcionMaestra: row.descripcion });
   base.estadoVisual    = audit.estado_visual;
   base.analisisVisual  = audit.analisis_visual;
   base.estadoTecnico   = audit.estado_tecnico;
   base.recomendaciones = audit.recomendaciones || '';
 
-  // Concatenar discrepancias de PDF con las del agente
   const agentDisc = audit.discrepancias || '';
   if (base.discrepancias && agentDisc && agentDisc !== 'Sin discrepancias') {
     base.discrepancias = `${base.discrepancias} | [IA] ${agentDisc}`;
   } else if (agentDisc && agentDisc !== 'Sin discrepancias') {
     base.discrepancias = agentDisc;
   }
-
   base.propuesta = audit.propuesta_correccion || '';
   return base;
 }
@@ -324,45 +284,37 @@ async function processRow(row, browser) {
 async function main() {
   console.log('=== Agente Auditor de Calidad Web ===');
   console.log(`Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
-  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
+  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia scraping: ${CONCURRENCY} | Gemini RPM: ${GEMINI_RPM}`);
 
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn('[warn] GEMINI_API_KEY no esta seteada.');
-  }
+  if (!process.env.GEMINI_API_KEY) console.warn('[warn] GEMINI_API_KEY no seteada.');
 
   const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
   console.log(`Filas a auditar: ${rows.length}`);
 
   const checkpoint = loadCheckpoint();
   const results    = checkpoint.results || {};
-
-  const browser = await launchBrowser();
-  const limit   = pLimit(CONCURRENCY);
+  const browser    = await launchBrowser();
+  const limit      = pLimit(CONCURRENCY);
   let done = 0;
 
   const tasks = rows.map((row) =>
     limit(async () => {
       const key = String(row.id || row.sku || row.rowNumber);
-
       if (results[key]) {
         done++;
         console.log(`[skip ${done}/${rows.length}] ${row.sku || row.id} (checkpoint)`);
         return;
       }
-
       try {
         const res    = await processRow(row, browser);
         results[key] = res;
         done++;
-        console.log(
-          `[ok ${done}/${rows.length}] ${row.sku} ` +
-          `pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`
-        );
+        console.log(`[ok ${done}/${rows.length}] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
       } catch (err) {
         results[key] = {
           sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
           integridad: 'ERROR', hashWeb: '', hashMaestro: '',
-          estadoVisual: 'ERROR', analisisVisual: `Fallo inesperado: ${err?.message || err}`,
+          estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
           estadoTecnico: 'ERROR', discrepancias: '', recomendaciones: '', propuesta: ''
         };
         done++;
@@ -376,28 +328,17 @@ async function main() {
   await Promise.all(tasks);
   try { await browser.close(); } catch (_) {}
 
-  const ordered = rows
-    .map((r) => results[String(r.id || r.sku || r.rowNumber)])
-    .filter(Boolean);
-
+  const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);
   const outPath = path.resolve(process.cwd(), OUTPUT_XLSX);
   await writeReport(outPath, ordered);
   console.log(`Reporte generado: ${outPath}`);
 
-  try {
-    await notify(outPath, { to: RECIPIENT });
-  } catch (err) {
-    console.error(`[notifier] Error: ${err?.message || err}`);
+  try { await notify(outPath, { to: RECIPIENT }); } catch (err) {
+    console.error(`[notifier] ${err?.message || err}`);
   }
 
-  try {
-    if (fs.existsSync(CHECKPOINT_FILE)) fs.unlinkSync(CHECKPOINT_FILE);
-  } catch (_) {}
-
+  try { if (fs.existsSync(CHECKPOINT_FILE)) fs.unlinkSync(CHECKPOINT_FILE); } catch (_) {}
   console.log('=== Fin de la auditoria ===');
 }
 
-main().catch((err) => {
-  console.error('Fallo general:', err);
-  process.exitCode = 1;
-});
+main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });

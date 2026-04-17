@@ -18,7 +18,7 @@ const SPREADSHEET_ID  = process.env.SPREADSHEET_ID  || '1QYT15W8NJ5M2UPVyvBy-Qqf
 const INPUT_SHEET     = process.env.INPUT_SHEET     || 'Hoja2';
 const OUTPUT_XLSX     = process.env.OUTPUT_XLSX     || 'Reporte_Auditoria_IA.xlsx';
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
-const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '3', 10);
+const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '8', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
@@ -359,7 +359,6 @@ async function main() {
   );
 
   await Promise.all(tasks);
-  try { await browser.close(); } catch (_) {}
 
   const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);
   const outPath = path.resolve(process.cwd(), OUTPUT_XLSX);

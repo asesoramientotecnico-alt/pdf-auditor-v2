@@ -328,6 +328,7 @@ async function main() {
   const browser    = await launchBrowser();
   const limit      = pLimit(CONCURRENCY);
   let done = 0;
+  const retryQueue = [];
 
   const tasks = rows.map((row) =>
     limit(async () => {
@@ -338,7 +339,14 @@ async function main() {
         return;
       }
       try {
-        const res    = await processRow(row, browser);
+        const res = await processRow(row, browser);
+        // Si el scraper falló por timeout, no guardar como ERROR — reintentar al final
+        if (res.analisisVisual && res.analisisVisual.includes('Navigation timeout')) {
+          retryQueue.push(row);
+          done++;
+          console.log(`[retry-queue ${done}/${rows.length}] ${row.sku} — scraper timeout, se reintentará`);
+          return;
+        }
         results[key] = res;
         done++;
         console.log(`[ok ${done}/${rows.length}] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
@@ -359,6 +367,35 @@ async function main() {
   );
 
   await Promise.all(tasks);
+
+  // Reintentar filas que dieron timeout en el scraper
+  if (retryQueue.length > 0) {
+    console.log(`\n=== Reintentando ${retryQueue.length} filas con timeout ===`);
+    const retryLimit = pLimit(1); // una por vez para no sobrecargar famiq
+    const retryTasks = retryQueue.map((row) =>
+      retryLimit(async () => {
+        const key = String(row.id || row.sku || row.rowNumber);
+        try {
+          await new Promise(r => setTimeout(r, 5000)); // pausa antes de reintentar
+          const res = await processRow(row, browser);
+          results[key] = res;
+          console.log(`[retry-ok] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
+        } catch (err) {
+          results[key] = {
+            sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
+            integridad: 'ERROR', hashWeb: '', hashMaestro: '',
+            estadoVisual: 'ERROR', analisisVisual: `Fallo reintento: ${err?.message || err}`,
+            estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
+            recomendaciones: '', propuesta: ''
+          };
+          console.error(`[retry-err] ${row.sku}: ${err?.message || err}`);
+        } finally {
+          saveCheckpoint({ results });
+        }
+      })
+    );
+    await Promise.all(retryTasks);
+  }
   try { await browser.close(); } catch (_) {}
 
   const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);

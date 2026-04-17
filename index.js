@@ -283,11 +283,15 @@ async function processRow(row, browser) {
     base.discrepancias = `[PDF] ${err?.message || err}`;
   }
 
-  // 2) Scrape del producto (titulo + specs)
-  // Si ya tenemos la URL de imagen en col M, la pasamos como 3er parámetro
-  const scrape = row.urlProducto
+  // 2) Scrape del producto
+  let scrape = row.urlProducto
     ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };
+
+  // Si falló pero tenemos imagen en col M, preservarla para el agent
+  if (scrape.error && row.urlImagen) {
+    scrape.imagen = row.urlImagen;
+  }
 
   // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });

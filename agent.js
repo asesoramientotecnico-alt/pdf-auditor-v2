@@ -90,9 +90,10 @@ export async function auditScrape(scrape, opts = {}) {
   });
 
   if (!apiKey) return errResult('Falta ANTHROPIC_API_KEY.');
-  if (!scrape || scrape.error) return errResult(
+  if (scrape?.error && !scrape?.imagen) return errResult(
     `No se pudo scrapear: ${scrape?.error||'sin datos'}`, 'Falla del scraper.'
   );
+  // Si hay error de scraper pero tenemos imagen, continuar con lo que hay
 
   const specs = { ...(scrape.especificaciones||{}) };
   const desc  = specs.__descripcion_larga__ || '';

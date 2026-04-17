@@ -78,27 +78,33 @@ async function fetchImageAsBase64(imageInput) {
     return { data, mimeType };
   }
 
-  // Caso 2: URL normal — descargar
-  try {
-    const res = await axios.get(imageInput, {
-      responseType: 'arraybuffer',
-      timeout: 20000,
-      maxContentLength: 4 * 1024 * 1024,
-      validateStatus: (s) => s >= 200 && s < 400,
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    const buf = Buffer.from(res.data);
-    if (buf.length > 3.5 * 1024 * 1024) {
-      console.warn(`[agent] Imagen grande (${(buf.length/1024/1024).toFixed(1)}MB), auditando sin imagen`);
-      return null;
+  // Caso 2: URL normal — descargar con retry (servidor de famiq es intermitente)
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await axios.get(imageInput, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        maxContentLength: 4 * 1024 * 1024,
+        validateStatus: (s) => s >= 200 && s < 400,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      const buf = Buffer.from(res.data);
+      if (buf.length > 3.5 * 1024 * 1024) {
+        console.warn(`[agent] Imagen grande (${(buf.length/1024/1024).toFixed(1)}MB), auditando sin imagen`);
+        return null;
+      }
+      let mimeType = (res.headers['content-type'] || '').split(';')[0].trim();
+      if (!mimeType.startsWith('image/')) mimeType = 'image/jpeg';
+      return { data: buf.toString('base64'), mimeType };
+    } catch (err) {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 3000));
+      } else {
+        console.warn(`[agent] No se pudo obtener imagen tras 2 intentos: ${err?.message || err}`);
+      }
     }
-    let mimeType = (res.headers['content-type'] || '').split(';')[0].trim();
-    if (!mimeType.startsWith('image/')) mimeType = 'image/jpeg';
-    return { data: buf.toString('base64'), mimeType };
-  } catch (err) {
-    console.warn(`[agent] No se pudo obtener imagen: ${err?.message || err}`);
-    return null;
   }
+  return null;
 }
 
 function safeParseJson(text) {
@@ -239,5 +245,6 @@ export async function auditScrape(scrape, opts = {}) {
 }
 
 export default auditScrape;
+
 
 

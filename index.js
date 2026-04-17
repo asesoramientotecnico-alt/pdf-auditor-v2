@@ -14,7 +14,7 @@ import { notify } from './notifier.js';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const SPREADSHEET_ID  = process.env.SPREADSHEET_ID  || '1Yn5-1a5BqnVoNch5Cifn_5lsvhYJM1L7';
+const SPREADSHEET_ID  = process.env.SPREADSHEET_ID  || '1QYT15W8NJ5M2UPVyvBy-QqfnOA4fEbTbbZfy7qrNLrY';
 const INPUT_SHEET     = process.env.INPUT_SHEET     || 'Hoja2';
 const OUTPUT_XLSX     = process.env.OUTPUT_XLSX     || 'Reporte_Auditoria_IA.xlsx';
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
@@ -24,13 +24,9 @@ const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
-// Llamada directa a Claude sin rate limiter artificial
-// (Claude Haiku no tiene límites de RPM problemáticos como Gemini)
-async function rateLimitedAudit(scrape, opts) {
-  return auditScrape(scrape, opts);
-}
-
-// -------------------- utilidades --------------------
+// -------------------- Cache de PDFs --------------------
+// Evita descargar el mismo PDF dos veces cuando varias filas apuntan al mismo archivo
+const pdfCache = new Map(); // url -> { hash, buf }
 
 function col(row, oneBasedIndex) {
   const v = row[oneBasedIndex - 1];
@@ -46,7 +42,12 @@ export function normalizeDriveUrl(url) {
   return s;
 }
 
-async function downloadBuffer(url, { timeout = 60000, retries = 3 } = {}) {
+async function downloadBufferWithCache(url, { timeout = 60000, retries = 3 } = {}) {
+  const cacheKey = url.trim();
+  if (pdfCache.has(cacheKey)) {
+    return pdfCache.get(cacheKey);
+  }
+
   let lastErr;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -57,15 +58,17 @@ async function downloadBuffer(url, { timeout = 60000, retries = 3 } = {}) {
         httpsAgent: insecureAgent,
         validateStatus: (s) => s >= 200 && s < 400,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
       });
-      return Buffer.from(res.data);
+      const buf = Buffer.from(res.data);
+      pdfCache.set(cacheKey, buf);
+      return buf;
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
-        const wait = 10000 * attempt; // 10s, 20s
-        console.warn(`[pdf] intento ${attempt}/${retries} fallido para ${url.slice(0,80)}, reintentando en ${wait/1000}s...`);
+        const wait = 10000 * attempt;
+        console.warn(`[pdf] intento ${attempt}/${retries} fallido para ${url.slice(0, 80)}, reintentando en ${wait / 1000}s...`);
         await new Promise((r) => setTimeout(r, wait));
       }
     }
@@ -77,13 +80,23 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-async function checkPdfIntegrity(urlWeb, urlDriveRaw) {
+async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '' };
+
+  // Construir URL completa del PDF web: base + nombre de archivo
+  let urlWeb = '';
+  if (urlFtBase && nombreArchivo) {
+    const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
+    urlWeb = base + nombreArchivo;
+  } else if (urlFtBase && !nombreArchivo) {
+    urlWeb = urlFtBase; // URL completa directamente en col9
+  }
+
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
-    urlWeb   ? downloadBuffer(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
-    urlDrive ? downloadBuffer(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
+    urlWeb   ? downloadBufferWithCache(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
+    urlDrive ? downloadBufferWithCache(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
   ]);
 
   const errs = [];
@@ -100,12 +113,12 @@ async function checkPdfIntegrity(urlWeb, urlDriveRaw) {
 
   if (result.hashWeb && result.hashMaestro) {
     result.integridad = result.hashWeb === result.hashMaestro ? 'OK' : 'DESACTUALIZADO';
-    result.detalle = result.integridad === 'OK'
+    result.detalle    = result.integridad === 'OK'
       ? 'Hash SHA-256 coincide.'
       : 'El PDF publicado NO coincide con el maestro de Drive.';
   } else {
     result.integridad = 'ERROR';
-    result.detalle = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
+    result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
   }
   return result;
 }
@@ -135,28 +148,36 @@ function saveCheckpoint(state) {
 // -------------------- Google Sheets --------------------
 
 async function readSheetRows(spreadsheetId, sheetName) {
-  const auth = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
+  const auth   = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
   const sheets = google.sheets({ version: 'v4', auth });
-  const resp = await sheets.spreadsheets.values.get({
+  const resp   = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: sheetName,
     valueRenderOption: 'UNFORMATTED_VALUE',
     dateTimeRenderOption: 'FORMATTED_STRING'
   });
+
   const rawRows = resp.data.values || [];
   if (rawRows.length === 0) throw new Error(`La hoja "${sheetName}" esta vacia.`);
 
   const rows = [];
   rawRows.slice(1).forEach((r, i) => {
-    const rowNumber   = i + 2;
-    const id          = col(r, 1);
-    const sku         = col(r, 2);
-    const descripcion = col(r, 3);
-    const urlProducto = col(r, 6);
-    const urlFtWeb    = col(r, 9);
-    const linkFtDrive = col(r, 11);
-    if (!id && !sku && !urlProducto && !urlFtWeb && !linkFtDrive) return;
-    rows.push({ rowNumber, id, sku, descripcion, urlProducto, urlFtWeb, linkFtDrive });
+    const rowNumber      = i + 2;
+    const id             = col(r, 1);   // col A: ID
+    const sku            = col(r, 2);   // col B: SKU
+    // col C: Descripción interna (no usada como texto maestro)
+    // col D: Linea
+    // col E: Subfamilia
+    const urlProducto    = col(r, 6);   // col F: URL producto
+    // col G: sub-Familia
+    // col H: ID producto
+    const urlFtBase      = col(r, 9);   // col I: URL FT (base, sin nombre de archivo)
+    const nombreArchivo  = col(r, 10);  // col J: Nombre archivo PDF
+    const linkFtDrive    = col(r, 11);  // col K: Link FT Drive
+    const textoComercial = col(r, 12);  // col L: Texto Comercial (FUENTE DE VERDAD)
+
+    if (!id && !sku && !urlProducto) return;
+    rows.push({ rowNumber, id, sku, urlProducto, urlFtBase, nombreArchivo, linkFtDrive, textoComercial });
   });
   return rows;
 }
@@ -167,20 +188,20 @@ async function writeReport(filePath, results) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Agente Auditor de Calidad Web';
   wb.created = new Date();
-  const ws = wb.addWorksheet('Auditoria');
+  const ws   = wb.addWorksheet('Auditoria');
 
   ws.columns = [
     { header: 'SKU',                        key: 'sku',             width: 18 },
-    { header: 'Texto Comercial Maestro',     key: 'descripcion',     width: 45 },
-    { header: 'URL Famiq',                   key: 'urlFamiq',        width: 55 },
+    { header: 'Texto Comercial',             key: 'textoComercial',  width: 55 },
+    { header: 'URL Famiq',                   key: 'urlFamiq',        width: 50 },
     { header: 'Integridad PDF',              key: 'integridad',      width: 18 },
     { header: 'Hash Web',                    key: 'hashWeb',         width: 66 },
-    { header: 'Hash Maestro (Drive)',        key: 'hashMaestro',     width: 66 },
-    { header: 'Estado Coherencia Visual',    key: 'estadoVisual',    width: 22 },
-    { header: 'Analisis de Imagen',          key: 'analisisVisual',  width: 55 },
-    { header: 'Estado Consistencia Tecnica', key: 'estadoTecnico',   width: 24 },
-    { header: 'Validaciones',                key: 'validaciones',    width: 60 },
-    { header: 'Discrepancias',               key: 'discrepancias',   width: 60 },
+    { header: 'Hash Maestro (Drive)',         key: 'hashMaestro',     width: 66 },
+    { header: 'Estado Visual',               key: 'estadoVisual',    width: 18 },
+    { header: 'Analisis Visual',             key: 'analisisVisual',  width: 55 },
+    { header: 'Estado Tecnico',              key: 'estadoTecnico',   width: 16 },
+    { header: 'Validaciones',                key: 'validaciones',    width: 65 },
+    { header: 'Discrepancias',               key: 'discrepancias',   width: 65 },
     { header: 'Recomendaciones',             key: 'recomendaciones', width: 55 },
     { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 }
   ];
@@ -201,12 +222,12 @@ async function writeReport(filePath, results) {
 
   results.forEach((r) => {
     const row = ws.addRow({
-      sku: r.sku, descripcion: r.descripcion, urlFamiq: r.urlProducto,
+      sku: r.sku, textoComercial: r.textoComercial, urlFamiq: r.urlProducto,
       integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro,
       estadoVisual: r.estadoVisual, analisisVisual: r.analisisVisual,
       estadoTecnico: r.estadoTecnico, validaciones: r.validaciones,
-      discrepancias: r.discrepancias,
-      recomendaciones: r.recomendaciones, propuesta: r.propuesta
+      discrepancias: r.discrepancias, recomendaciones: r.recomendaciones,
+      propuesta: r.propuesta
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
@@ -234,15 +255,16 @@ async function writeReport(filePath, results) {
 
 async function processRow(row, browser) {
   const base = {
-    sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
+    sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
     integridad: 'ERROR', hashWeb: '', hashMaestro: '',
     estadoVisual: 'ERROR', analisisVisual: '',
-    estadoTecnico: 'ERROR', discrepancias: '', validaciones: '', recomendaciones: '', propuesta: ''
+    estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
+    recomendaciones: '', propuesta: ''
   };
 
-  // 1) Integridad PDF
+  // 1) Integridad PDF (con cache — si el mismo PDF aparece en varias filas, se descarga una sola vez)
   try {
-    const pdf = await checkPdfIntegrity(row.urlFtWeb, row.linkFtDrive);
+    const pdf = await checkPdfIntegrity(row.urlFtBase, row.nombreArchivo, row.linkFtDrive);
     base.integridad  = pdf.integridad;
     base.hashWeb     = pdf.hashWeb;
     base.hashMaestro = pdf.hashMaestro;
@@ -254,18 +276,18 @@ async function processRow(row, browser) {
     base.discrepancias = `[PDF] ${err?.message || err}`;
   }
 
-  // 2) Scrape
+  // 2) Scrape del producto (titulo + specs + imagen del carrusel)
   const scrape = row.urlProducto
     ? await scrapeProduct(row.urlProducto, browser)
     : { error: 'Fila sin URL de producto.' };
 
-  // 3) Auditoria IA con Claude Haiku
-  const audit = await rateLimitedAudit(scrape, { descripcionMaestra: row.descripcion });
+  // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
+  const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
   base.estadoVisual    = audit.estado_visual;
   base.analisisVisual  = audit.analisis_visual;
   base.estadoTecnico   = audit.estado_tecnico;
-  base.recomendaciones = audit.recomendaciones || '';
   base.validaciones    = audit.validaciones    || '';
+  base.recomendaciones = audit.recomendaciones || '';
 
   const agentDisc = audit.discrepancias || '';
   if (base.discrepancias && agentDisc && agentDisc !== 'Sin discrepancias') {
@@ -284,7 +306,7 @@ async function main() {
   console.log(`Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
   console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
 
-  if (!process.env.GEMINI_API_KEY) console.warn('[warn] GEMINI_API_KEY no seteada.');
+  if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY no seteada.');
 
   const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
   console.log(`Filas a auditar: ${rows.length}`);
@@ -310,10 +332,11 @@ async function main() {
         console.log(`[ok ${done}/${rows.length}] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
       } catch (err) {
         results[key] = {
-          sku: row.sku, descripcion: row.descripcion, urlProducto: row.urlProducto,
+          sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
           integridad: 'ERROR', hashWeb: '', hashMaestro: '',
           estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
-          estadoTecnico: 'ERROR', discrepancias: '', validaciones: '', recomendaciones: '', propuesta: ''
+          estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
+          recomendaciones: '', propuesta: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);
@@ -340,6 +363,3 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
-
-
-

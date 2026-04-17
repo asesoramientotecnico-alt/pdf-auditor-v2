@@ -85,11 +85,17 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
 
   // Construir URL completa del PDF web: base + nombre de archivo
   let urlWeb = '';
-  if (urlFtBase && nombreArchivo) {
-    const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
-    urlWeb = base + nombreArchivo;
-  } else if (urlFtBase && !nombreArchivo) {
-    urlWeb = urlFtBase; // URL completa directamente en col9
+  if (urlFtBase) {
+    // Si col9 ya termina en extensión de archivo (.pdf, .PDF, .xlsx, etc.)
+    // es una URL completa — no concatenar col10
+    const isCompleteUrl = /\.\w{2,5}$/i.test(urlFtBase.split('?')[0].split('#')[0]);
+    if (isCompleteUrl || !nombreArchivo) {
+      urlWeb = urlFtBase;
+    } else {
+      // col9 es base path, col10 es el nombre del archivo
+      const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
+      urlWeb = base + nombreArchivo;
+    }
   }
 
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
@@ -363,3 +369,4 @@ async function main() {
 }
 
 main().catch((err) => { console.error('Fallo general:', err); process.exitCode = 1; });
+

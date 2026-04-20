@@ -17,7 +17,6 @@
     "exceljs": "^4.4.0",
     "googleapis": "^144.0.0",
     "p-limit": "^6.1.0",
-    "pdf-parse": "1.1.1",
     "pdfjs-dist": "^5.6.205",
     "puppeteer": "^23.6.0"
   }

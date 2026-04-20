@@ -10,15 +10,7 @@ import { google } from 'googleapis';
 
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
-// pdf-parse: resolve via CJS require to avoid ESM named-export issues
-let pdfParse;
-try {
-  pdfParse = _require('pdf-parse');
-  if (typeof pdfParse !== 'function' && typeof pdfParse?.default === 'function') pdfParse = pdfParse.default;
-  if (typeof pdfParse !== 'function' && typeof pdfParse?.parse === 'function') pdfParse = pdfParse.parse;
-} catch(e) {
-  console.warn('[pdf-parse] load failed:', e.message);
-}
+const pdfParse = _require('pdf-parse');
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
 import { notify } from './notifier.js';

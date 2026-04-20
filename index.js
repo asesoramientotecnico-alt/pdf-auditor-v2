@@ -97,8 +97,7 @@ async function contentHash(buf) {
     const normalized = parts.join(' ')
       .toLowerCase()
       .replace(/,/g, '.')          // unificar decimales: 152,4 -> 152.4
-      .replace(/[\s
-]+/g, '')   // eliminar espacios y saltos
+      .replace(/[\s\r\n]+/g, '')   // eliminar espacios y saltos
       .replace(/[^ -~]/g, '') // solo chars imprimibles ASCII
       .replace(/\s/g, '');          // por si quedó algo
     return crypto.createHash('sha256').update(normalized).digest('hex');

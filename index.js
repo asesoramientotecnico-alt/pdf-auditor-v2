@@ -8,9 +8,7 @@ import ExcelJS from 'exceljs';
 import pLimit from 'p-limit';
 import { google } from 'googleapis';
 
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse/lib/pdf-parse.js');
+import pdfParse from 'pdf-parse/node';
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
 import { notify } from './notifier.js';

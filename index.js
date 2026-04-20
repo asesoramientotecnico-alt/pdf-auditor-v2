@@ -8,9 +8,9 @@ import ExcelJS from 'exceljs';
 import pLimit from 'p-limit';
 import { google } from 'googleapis';
 
-import { createRequire } from 'node:module';
-const _require = createRequire(import.meta.url);
-const pdfParse = _require('pdf-parse');
+// pdfjs-dist: libreria oficial de Mozilla para extraer texto de PDFs
+// Build legacy CommonJS, estable en Node sin configuracion extra
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
 import { notify } from './notifier.js';
@@ -83,24 +83,39 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-// Extrae texto de un PDF, lo normaliza y devuelve su hash SHA-256
-// Esto evita falsos positivos por diferencias en metadatos del archivo
+// Extrae texto de un PDF con pdfjs-dist, lo normaliza y devuelve su hash SHA-256
+// Compara el CONTENIDO real, no los bytes. Evita falsos positivos por metadatos/timestamps.
 async function contentHash(buf) {
   try {
-    const data = await pdfParse(buf, { max: 0 });
-    const text = data.text || '';
-    const normalized = text
+    const uint8 = new Uint8Array(buf);
+    const loadingTask = getDocument({
+      data: uint8,
+      useSystemFonts: true,
+      disableFontFace: true,
+      verbosity: 0
+    });
+    const doc = await loadingTask.promise;
+    let fullText = '';
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      fullText += tc.items.map(it => it.str || '').join(' ') + ' ';
+    }
+    await doc.destroy();
+
+    const normalized = fullText
       .toLowerCase()
       .replace(/,/g, '.')
       .replace(/[\s\r\n]+/g, '')
       .replace(/[^ -~]/g, '');
+
     if (normalized.length < 20) {
       console.warn('[pdf] Texto extraido muy corto, usando hash de bytes');
       return sha256(buf);
     }
     return crypto.createHash('sha256').update(normalized).digest('hex');
   } catch (err) {
-    console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,60));
+    console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,80));
     return sha256(buf);
   }
 }

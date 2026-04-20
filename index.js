@@ -8,6 +8,7 @@ import ExcelJS from 'exceljs';
 import pLimit from 'p-limit';
 import { google } from 'googleapis';
 
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
 import { notify } from './notifier.js';
@@ -80,6 +81,34 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+// Extrae texto de un PDF, lo normaliza y devuelve su hash SHA-256
+// Esto evita falsos positivos por diferencias en metadatos del archivo
+async function contentHash(buf) {
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf), verbosity: 0 }).promise;
+    const parts = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(item => item.str || '').join(' ');
+      parts.push(pageText);
+    }
+    // Normalizar: minúsculas, sin espacios, sin saltos, punto y coma unificados
+    const normalized = parts.join(' ')
+      .toLowerCase()
+      .replace(/,/g, '.')          // unificar decimales: 152,4 -> 152.4
+      .replace(/[\s
+]+/g, '')   // eliminar espacios y saltos
+      .replace(/[^ -~]/g, '') // solo chars imprimibles ASCII
+      .replace(/\s/g, '');          // por si quedó algo
+    return crypto.createHash('sha256').update(normalized).digest('hex');
+  } catch (err) {
+    // Si no se puede extraer texto (PDF escaneado, etc.) caer a hash de bytes
+    console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,60));
+    return sha256(buf);
+  }
+}
+
 async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtDrive: '' };
 
@@ -108,12 +137,12 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
 
   const errs = [];
   if (webRes.status === 'fulfilled') {
-    result.hashWeb = sha256(webRes.value);
+    result.hashWeb = await contentHash(webRes.value);
   } else {
     errs.push(`PDF web: ${webRes.reason?.message || webRes.reason}`);
   }
   if (driveRes.status === 'fulfilled') {
-    result.hashMaestro = sha256(driveRes.value);
+    result.hashMaestro = await contentHash(driveRes.value);
   } else {
     errs.push(`PDF Drive: ${driveRes.reason?.message || driveRes.reason}`);
   }

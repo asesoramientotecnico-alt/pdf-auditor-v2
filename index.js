@@ -8,7 +8,9 @@ import ExcelJS from 'exceljs';
 import pLimit from 'p-limit';
 import { google } from 'googleapis';
 
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse/lib/pdf-parse.js');
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
 import { notify } from './notifier.js';
@@ -85,24 +87,19 @@ function sha256(buf) {
 // Esto evita falsos positivos por diferencias en metadatos del archivo
 async function contentHash(buf) {
   try {
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf), verbosity: 0 }).promise;
-    const parts = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = content.items.map(item => item.str || '').join(' ');
-      parts.push(pageText);
-    }
-    // Normalizar: minúsculas, sin espacios, sin saltos, punto y coma unificados
-    const normalized = parts.join(' ')
+    const data = await pdfParse(buf, { max: 0 });
+    const text = data.text || '';
+    const normalized = text
       .toLowerCase()
-      .replace(/,/g, '.')          // unificar decimales: 152,4 -> 152.4
-      .replace(/[\s\r\n]+/g, '')   // eliminar espacios y saltos
-      .replace(/[^ -~]/g, '') // solo chars imprimibles ASCII
-      .replace(/\s/g, '');          // por si quedó algo
+      .replace(/,/g, '.')
+      .replace(/[\s\r\n]+/g, '')
+      .replace(/[^ -~]/g, '');
+    if (normalized.length < 20) {
+      console.warn('[pdf] Texto extraido muy corto, usando hash de bytes');
+      return sha256(buf);
+    }
     return crypto.createHash('sha256').update(normalized).digest('hex');
   } catch (err) {
-    // Si no se puede extraer texto (PDF escaneado, etc.) caer a hash de bytes
     console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,60));
     return sha256(buf);
   }

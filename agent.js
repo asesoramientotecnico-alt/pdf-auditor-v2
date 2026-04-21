@@ -7,6 +7,18 @@ const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
 
+// Throttle: garantiza minimo 6 segundos entre llamadas a Claude
+// Con Tier 1 (10k output tokens/min) y ~200 tokens/llamada = max 50 calls/min
+// 6s entre llamadas = max 10 calls/min con concurrencia 3 = sin rate limit
+let _lastCallTime = 0;
+const MIN_CALL_INTERVAL_MS = 6000;
+async function throttledClaude() {
+  const now = Date.now();
+  const wait = MIN_CALL_INTERVAL_MS - (now - _lastCallTime);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _lastCallTime = Date.now();
+}
+
 // Prompt comprimido — mismo contenido, menos tokens
 const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
@@ -121,6 +133,7 @@ export async function auditScrape(scrape, opts = {}) {
 
   const MAX_RETRIES = 3;
   let lastErr = null;
+  await throttledClaude();
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await axios.post(ANTHROPIC_API_URL,

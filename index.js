@@ -205,6 +205,7 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
+    console.warn(`[pdf] ERROR integridad: ${result.detalle} | urlWeb=${urlWeb.slice(0,80)} | urlDrive=${urlDrive.slice(0,80)}`);
   }
   return result;
 }

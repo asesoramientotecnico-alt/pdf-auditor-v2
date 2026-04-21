@@ -24,7 +24,10 @@ const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
 const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '8', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 
-const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
+const SHEETS_SCOPES = [
+  'https://www.googleapis.com/auth/spreadsheets.readonly',
+  'https://www.googleapis.com/auth/drive.readonly'
+];
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 // -------------------- Cache de PDFs --------------------
@@ -45,12 +48,39 @@ export function normalizeDriveUrl(url) {
   return s;
 }
 
+// Extrae el fileId de una URL de Google Drive
+function driveFileId(url) {
+  const s = String(url || '').trim();
+  const m = s.match(/\/file\/d\/([^/?#]+)/) || s.match(/[?&]id=([^&]+)/);
+  return m ? m[1] : null;
+}
+
+// Descarga un archivo de Google Drive usando la API autenticada (evita el login-wall)
+async function downloadDriveBuffer(fileId) {
+  const auth  = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
+  const drive = google.drive({ version: 'v3', auth });
+  const res   = await drive.files.get(
+    { fileId, alt: 'media' },
+    { responseType: 'arraybuffer' }
+  );
+  return Buffer.from(res.data);
+}
+
 async function downloadBufferWithCache(url, { timeout = 60000, retries = 3 } = {}) {
   const cacheKey = url.trim();
   if (pdfCache.has(cacheKey)) {
     return pdfCache.get(cacheKey);
   }
 
+  // Si es un archivo de Google Drive, usar la API autenticada
+  const fileId = driveFileId(url);
+  if (fileId) {
+    const buf = await downloadDriveBuffer(fileId);
+    pdfCache.set(cacheKey, buf);
+    return buf;
+  }
+
+  // Para URLs externas (PDF publicado en web de Famiq), usar axios normal
   let lastErr;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {

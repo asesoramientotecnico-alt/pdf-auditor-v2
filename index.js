@@ -60,7 +60,7 @@ async function downloadDriveBuffer(fileId) {
   const auth  = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
   const drive = google.drive({ version: 'v3', auth });
   const res   = await drive.files.get(
-    { fileId, alt: 'media' },
+    { fileId, alt: 'media', supportsAllDrives: true, includeItemsFromAllDrives: true },
     { responseType: 'arraybuffer' }
   );
   return Buffer.from(res.data);

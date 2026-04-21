@@ -305,6 +305,7 @@ async function writeReport(filePath, results) {
     if (!val) return null;
     if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';
     if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';
+    if (val === 'ERROR_DESCARGA')          return 'FFFFD966'; // amarillo — pendiente reintento
     if (val === 'SIN_IMAGEN')              return 'FFDCE6F1';
     return 'FFFFC7CE';
   };
@@ -447,6 +448,30 @@ async function main() {
   );
 
   await Promise.all(tasks);
+
+  // ---- Reintentos para filas con error de descarga de imagen ----
+  const retryKeys = Object.keys(results).filter(k => results[k]?.estadoVisual === 'ERROR_DESCARGA');
+  if (retryKeys.length > 0) {
+    console.log(`\n[retry] ${retryKeys.length} filas con ERROR_DESCARGA — reintentando en 30s...`);
+    await new Promise(r => setTimeout(r, 30000));
+    for (const key of retryKeys) {
+      const row = rows.find(r => String(r.id || r.sku || r.rowNumber) === key);
+      if (!row) continue;
+      try {
+        console.log(`[retry] ${row.sku}...`);
+        // Borrar del checkpoint para forzar reproceso
+        delete results[key];
+        const res = await processRow(row, browser);
+        results[key] = res;
+        console.log(`[retry ok] ${row.sku} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
+      } catch (err) {
+        results[key] = results[key] || {};
+        results[key].analisisVisual = `Reintento fallido: ${err?.message || err}`;
+        console.error(`[retry err] ${row.sku}: ${err?.message || err}`);
+      }
+      saveCheckpoint({ results });
+    }
+  }
 
   const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);
   const outPath = path.resolve(process.cwd(), OUTPUT_XLSX);

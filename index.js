@@ -86,6 +86,15 @@ function sha256(buf) {
 // Extrae texto de un PDF con pdfjs-dist, lo normaliza y devuelve su hash SHA-256
 // Compara el CONTENIDO real, no los bytes. Evita falsos positivos por metadatos/timestamps.
 async function contentHash(buf) {
+  // Validar que el buffer sea un PDF real (empieza con %PDF)
+  const header = buf.slice(0, 5).toString('ascii');
+  if (!header.startsWith('%PDF')) {
+    const preview = buf.slice(0, 120).toString('utf-8').replace(/\s+/g, ' ').trim();
+    console.warn('[pdf] El buffer descargado no es un PDF. Primeros bytes:', preview);
+    // Devolver hash de bytes igual para que al menos la comparacion sea consistente
+    return sha256(buf);
+  }
+
   try {
     const uint8 = new Uint8Array(buf);
     const loadingTask = getDocument({

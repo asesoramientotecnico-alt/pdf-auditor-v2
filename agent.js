@@ -40,9 +40,11 @@ Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
 Responde SOLO JSON valido:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
 
+// Resultado posible: { data, mime } | null (sin URL) | { downloadError: true, status, message }
 async function fetchImageAsBase64(imageUrl) {
   if (!imageUrl) return null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
@@ -50,7 +52,11 @@ async function fetchImageAsBase64(imageUrl) {
         maxContentLength: 3 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
         httpsAgent: insecureAgent,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.famiq.com.ar/',
+          'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+        }
       });
       const buf = Buffer.from(res.data);
       if (buf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${buf.length}`); return null; }
@@ -59,11 +65,16 @@ async function fetchImageAsBase64(imageUrl) {
       console.log(`[agent] imagen ok (${buf.length} bytes)`);
       return { data: buf.toString('base64'), mime };
     } catch (err) {
-      console.warn(`[agent] imagen intento ${attempt} error: ${err?.message?.slice(0,100)}`);
-      if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
+      lastErr = err;
+      const status = err?.response?.status;
+      console.warn(`[agent] imagen intento ${attempt}/3 error HTTP ${status || 'red'}: ${err?.message?.slice(0,100)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 5000 * attempt));
     }
   }
-  return null;
+  // Falló por error de red/servidor — NO es que no exista imagen
+  const status = lastErr?.response?.status;
+  console.warn(`[agent] imagen FALLO DEFINITIVO (${status || 'sin respuesta'}) para: ${imageUrl}`);
+  return { downloadError: true, status: status || 0, message: lastErr?.message || 'Sin respuesta' };
 }
 
 function safeParseJson(text) {
@@ -82,7 +93,7 @@ function normalize(raw) {
   };
   const v = String(raw.estado_visual||'').toUpperCase();
   return {
-    estado_visual: v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR':'SIN_IMAGEN',
+    estado_visual: v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR': v==='ERROR_DESCARGA'?'ERROR_DESCARGA':'SIN_IMAGEN',
     analisis_visual:      String(raw.analisis_visual      ||'').trim(),
     estado_tecnico:       String(raw.estado_tecnico       ||'').toUpperCase()==='OK'?'OK':'ERROR',
     validaciones:         String(raw.validaciones         ||'').trim(),
@@ -125,9 +136,21 @@ export async function auditScrape(scrape, opts = {}) {
     '\nResponde SOLO el JSON indicado.';
 
   // Imagen
-  const img = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
-  const messageContent = img
-    ? [{ type:'image', source:{ type:'base64', media_type:img.mime, data:img.data }},
+  const imgResult = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
+
+  // Si falló la descarga por error de red, retornar estado especial para reintentar
+  if (imgResult?.downloadError) {
+    return {
+      estado_visual: 'ERROR_DESCARGA',
+      analisis_visual: `No se pudo descargar la imagen (HTTP ${imgResult.status}): ${imgResult.message}. Pendiente de reintento.`,
+      estado_tecnico: 'ERROR',
+      validaciones: '', discrepancias: `[IMAGEN] Error de descarga HTTP ${imgResult.status}`,
+      recomendaciones: '', propuesta_correccion: ''
+    };
+  }
+
+  const messageContent = imgResult
+    ? [{ type:'image', source:{ type:'base64', media_type:imgResult.mime, data:imgResult.data }},
        { type:'text', text:userText }]
     : userText;
 

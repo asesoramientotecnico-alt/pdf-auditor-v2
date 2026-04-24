@@ -110,10 +110,10 @@ export async function scrapeProduct(url, _ignoredBrowser = null, urlImagenDirect
     }
   }
 
-  // 2) Fallback a Col M si la API no devolvió imagen
+  // 2) Fallback a Col M — elimina /chica/ para obtener imagen tamaño completo
   if (!imagen && urlImagenDirecta && String(urlImagenDirecta).trim()) {
-    imagen = String(urlImagenDirecta).trim();
-    console.log(`[scraper] ✓ Col M (fallback)`);
+    imagen = String(urlImagenDirecta).trim().replace('/uploads/materiales/chica/', '/uploads/materiales/');
+    console.log(`[scraper] ✓ Col M (fullsize)`);
   }
 
   console.log(`[scraper] ${url} titulo="${titulo.slice(0, 40)}" specs=${Object.keys(especificaciones).filter(k => !k.startsWith('__')).length} imagen=${imagen ? '✓' : '✗'}`);

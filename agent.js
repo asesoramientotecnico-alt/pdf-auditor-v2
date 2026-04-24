@@ -7,16 +7,16 @@ const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
 
-// Throttle: garantiza minimo 6 segundos entre llamadas a Claude
-// Con Tier 1 (10k output tokens/min) y ~200 tokens/llamada = max 50 calls/min
-// 6s entre llamadas = max 10 calls/min con concurrencia 3 = sin rate limit
-let _lastCallTime = 0;
-const MIN_CALL_INTERVAL_MS = 6000;
+// Throttle: 5 req/min = 1 cada 13s (margen sobre los 12s exactos)
+// Cola de tiempo reservado: cada llamada toma un slot aunque lleguen simultáneas
+const MIN_CALL_INTERVAL_MS = 13000;
+let _nextCallTime = 0;
 async function throttledClaude() {
   const now = Date.now();
-  const wait = MIN_CALL_INTERVAL_MS - (now - _lastCallTime);
+  const callTime = Math.max(now, _nextCallTime);
+  _nextCallTime = callTime + MIN_CALL_INTERVAL_MS;
+  const wait = callTime - now;
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  _lastCallTime = Date.now();
 }
 
 // Prompt comprimido — mismo contenido, menos tokens

@@ -19,7 +19,6 @@ async function throttledClaude() {
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
 }
 
-// Prompt comprimido — mismo contenido, menos tokens
 const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
 Inputs:
@@ -27,10 +26,14 @@ Inputs:
 - titulo_web: titulo publicado en famiq.com.ar
 - descripcion_web: texto descriptivo de la pagina
 - specs: tabla de especificaciones tecnicas
-- imagen adjunta (si disponible): primera foto del carrusel
+- imagen adjunta: foto del producto tomada de la columna M del inventario
+
+REGLA CRITICA PARA IMAGEN:
+- Si recibes una imagen adjunta en este mensaje: DEBES evaluarla. Usa COHERENTE si muestra el producto correcto segun texto_comercial, o ERROR si muestra otro producto o es incorrecta. NUNCA uses SIN_IMAGEN si recibes una imagen.
+- Solo usa SIN_IMAGEN si el mensaje NO contiene imagen adjunta.
 
 Validar:
-A) VISUAL (solo si hay imagen): la imagen corresponde al texto_comercial?
+A) VISUAL: la imagen adjunta corresponde al texto_comercial? (COHERENTE/ERROR/SIN_IMAGEN segun regla)
 B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
 C) TEXTO WEB vs specs: titulo_web y descripcion_web coinciden con specs?
 

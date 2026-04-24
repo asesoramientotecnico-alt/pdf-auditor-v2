@@ -89,31 +89,11 @@ export async function scrapeProduct(url, _ignoredBrowser = null, urlImagenDirect
   const sku = productoData.codigo || productoData.sku || '';
   if (sku) especificaciones['__sku_web__'] = String(sku);
 
-  // Imagen: PRIORIDAD a la imagen del producto (tamaño completo), Col M como fallback
+  // Imagen: Col M es la fuente de verdad (URL suministrada manualmente)
   let imagen = null;
-
-  // 1) Imagen desde la API del producto — sin /chica/, tamaño completo
-  const imgs = productoData.imagenes || productoData.imagen || [];
-  const imgArray = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
-  if (imgArray.length > 0) {
-    const first = imgArray[0];
-    let nombre = null;
-    if (typeof first === 'string') nombre = first;
-    else if (first?.url) nombre = first.url;
-    else if (first?.nombre) nombre = first.nombre;
-    else if (first?.name) nombre = first.name;
-    if (nombre) {
-      imagen = nombre.startsWith('http')
-        ? nombre
-        : `https://www.famiq.com.ar/uploads/materiales/${nombre}`;
-      console.log(`[scraper] ✓ API`);
-    }
-  }
-
-  // 2) Fallback a Col M — elimina /chica/ para obtener imagen tamaño completo
-  if (!imagen && urlImagenDirecta && String(urlImagenDirecta).trim()) {
-    imagen = String(urlImagenDirecta).trim().replace('/uploads/materiales/chica/', '/uploads/materiales/');
-    console.log(`[scraper] ✓ Col M (fullsize)`);
+  if (urlImagenDirecta && String(urlImagenDirecta).trim()) {
+    imagen = String(urlImagenDirecta).trim();
+    console.log(`[scraper] ✓ Col M`);
   }
 
   console.log(`[scraper] ${url} titulo="${titulo.slice(0, 40)}" specs=${Object.keys(especificaciones).filter(k => !k.startsWith('__')).length} imagen=${imagen ? '✓' : '✗'}`);

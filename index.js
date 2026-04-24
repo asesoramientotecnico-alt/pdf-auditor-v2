@@ -442,7 +442,7 @@ async function main() {
 
   const tasks = rows.map((row) =>
     limit(async () => {
-      const key = String(row.id || row.sku || row.rowNumber);
+      const key = String(row.rowNumber);
       if (results[key]) {
         done++;
         console.log(`[skip ${done}/${rows.length}] ${row.sku || row.id} (checkpoint)`);
@@ -478,7 +478,7 @@ async function main() {
     console.log(`\n[retry] ${retryKeys.length} filas con ERROR_DESCARGA — reintentando en 30s...`);
     await new Promise(r => setTimeout(r, 30000));
     for (const key of retryKeys) {
-      const row = rows.find(r => String(r.id || r.sku || r.rowNumber) === key);
+      const row = rows.find(r => String(r.rowNumber) === key);
       if (!row) continue;
       try {
         console.log(`[retry] ${row.sku}...`);
@@ -496,7 +496,7 @@ async function main() {
     }
   }
 
-  const ordered = rows.map((r) => results[String(r.id || r.sku || r.rowNumber)]).filter(Boolean);
+  const ordered = rows.map((r) => results[String(r.rowNumber)]).filter(Boolean);
   const outPath = path.resolve(process.cwd(), OUTPUT_XLSX);
   await writeReport(outPath, ordered);
   console.log(`Reporte generado: ${outPath}`);

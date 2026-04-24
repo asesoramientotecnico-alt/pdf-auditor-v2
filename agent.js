@@ -20,7 +20,8 @@ async function throttledClaude() {
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
 }
 
-const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
+// Prompt completo: visual + técnico (se usa la primera vez que aparece una imagen)
+const SYSTEM_PROMPT_FULL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
 Inputs:
 - texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
@@ -42,6 +43,28 @@ Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
 
 Responde SOLO JSON valido:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+
+// Prompt técnico: sin imagen (se usa cuando la imagen ya fue evaluada y está en caché)
+const SYSTEM_PROMPT_TECHNICAL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
+
+Inputs:
+- texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
+- titulo_web: titulo publicado en famiq.com.ar
+- specs: tabla de especificaciones tecnicas
+
+Validar SOLO la parte tecnica (sin imagen):
+B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
+C) TEXTO WEB vs specs: titulo_web coincide con specs?
+
+Errores criticos: material wrong, diametro wrong, norma wrong, specs de otro SKU.
+Recomendaciones: titulo mal redactado, specs incompletas.
+
+Responde SOLO JSON valido:
+{"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+
+// Cache visual en memoria: image_url -> { estado_visual, analisis_visual }
+// Garantiza que la misma foto siempre recibe el mismo diagnóstico visual en una ejecución
+const visualCache = new Map();
 
 async function resizeImage(buf) {
   try {
@@ -95,7 +118,6 @@ async function fetchImageAsBase64(imageUrl) {
       if (attempt < 3) await new Promise(r => setTimeout(r, 5000 * attempt));
     }
   }
-  // Falló por error de red/servidor — NO es que no exista imagen
   const status = lastErr?.response?.status;
   console.warn(`[agent] imagen FALLO DEFINITIVO (${status || 'sin respuesta'}) para: ${imageUrl}`);
   return { downloadError: true, status: status || 0, message: lastErr?.message || 'Sin respuesta' };
@@ -129,6 +151,53 @@ function normalize(raw) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Llama a Claude con reintentos. Devuelve el objeto JSON parseado o null en error.
+async function callClaude(systemPrompt, messageContent, apiKey) {
+  const MAX_RETRIES = 3;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await axios.post(
+        ANTHROPIC_API_URL,
+        {
+          model: MODEL,
+          max_tokens: 700,
+          temperature: 0,
+          system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+          messages: [{ role: 'user', content: messageContent }]
+        },
+        {
+          timeout: 40000,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'prompt-caching-2024-07-31'
+          }
+        }
+      );
+      const parsed = safeParseJson(res.data?.content?.[0]?.text || '');
+      if (!parsed) {
+        console.warn('[agent] JSON no parseable, stop_reason=' + (res.data?.stop_reason||'?') +
+          ' texto=' + (res.data?.content?.[0]?.text||'').slice(0,200));
+        return null;
+      }
+      return parsed;
+    } catch (err) {
+      lastErr = err;
+      const status = err?.response?.status;
+      const body   = err?.response?.data ? JSON.stringify(err.response.data) : '';
+      console.warn(`[agent] Claude ${status} intento ${attempt}/${MAX_RETRIES}: ${body.slice(0,150)}`);
+      if (new Set([429,529,503,502]).has(status) && attempt < MAX_RETRIES) {
+        await sleep(10000 * attempt);
+        continue;
+      }
+      break;
+    }
+  }
+  return { _error: true, _lastErr: lastErr };
+}
+
 export async function auditScrape(scrape, opts = {}) {
   const apiKey = opts.apiKey || process.env.ANTHROPIC_API_KEY;
   const errResult = (msg, disc='') => ({
@@ -140,28 +209,34 @@ export async function auditScrape(scrape, opts = {}) {
   if (scrape?.error && !scrape?.imagen) return errResult(
     `No se pudo scrapear: ${scrape?.error||'sin datos'}`, 'Falla del scraper.'
   );
-  // Si hay error de scraper pero tenemos imagen, continuar con lo que hay
 
   const specs = { ...(scrape.especificaciones||{}) };
-  const desc  = specs.__descripcion_larga__ || '';
   delete specs.__descripcion_larga__;
   delete specs.__sku_web__;
 
-  // User message compacto — descripcion_web excluida (texto genérico de categoría, no aporta)
-  const payload = {
-    texto_comercial: opts.descripcionMaestra || '',
-    titulo_web:      scrape.titulo || '',
-    specs
-  };
-
   const userText = 'Auditar producto famiq.com.ar:\n' +
-    JSON.stringify(payload, null, 1) +   // indent=1 para menos tokens que indent=2
+    JSON.stringify({ texto_comercial: opts.descripcionMaestra||'', titulo_web: scrape.titulo||'', specs }, null, 1) +
     '\nResponde SOLO el JSON indicado.';
 
-  // Imagen
-  const imgResult = scrape.imagen ? await fetchImageAsBase64(scrape.imagen) : null;
+  const imageUrl = scrape.imagen || null;
 
-  // Si falló la descarga por error de red, retornar estado especial para reintentar
+  // ── RUTA A: imagen ya evaluada en esta ejecución ──────────────────────────
+  // Usa el resultado visual cacheado + llama solo para la parte técnica (sin imagen, más barato)
+  if (imageUrl && visualCache.has(imageUrl)) {
+    const cached = visualCache.get(imageUrl);
+    console.log(`[agent] visual cache hit → ${imageUrl.slice(-55)}`);
+    await throttledClaude();
+    const tech = await callClaude(SYSTEM_PROMPT_TECHNICAL, userText, apiKey);
+    if (!tech || tech._error) {
+      const body = tech?._lastErr?.response?.data ? JSON.stringify(tech._lastErr.response.data).slice(0,300) : '';
+      return errResult(`Error Claude técnico: ${tech?._lastErr?.message}`, body||'Sin respuesta.');
+    }
+    return normalize({ ...tech, estado_visual: cached.estado_visual, analisis_visual: cached.analisis_visual });
+  }
+
+  // ── RUTA B: imagen nueva o sin imagen → llamada completa ─────────────────
+  const imgResult = imageUrl ? await fetchImageAsBase64(imageUrl) : null;
+
   if (imgResult?.downloadError) {
     return {
       estado_visual: 'ERROR_DESCARGA',
@@ -177,36 +252,23 @@ export async function auditScrape(scrape, opts = {}) {
        { type:'text', text:userText }]
     : userText;
 
-  const MAX_RETRIES = 3;
-  let lastErr = null;
   await throttledClaude();
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const res = await axios.post(ANTHROPIC_API_URL,
-        { model:MODEL, max_tokens:700, system:[{ type:"text", text:SYSTEM_PROMPT, cache_control:{ type:"ephemeral" } }],
-          messages:[{ role:'user', content:messageContent }] },
-        { timeout:40000, headers:{
-            'Content-Type':'application/json',
-            'x-api-key':apiKey,
-            'anthropic-version':'2023-06-01', 'anthropic-beta':'prompt-caching-2024-07-31'
-          }}
-      );
-      const parsed = safeParseJson(res.data?.content?.[0]?.text || '');
-      if (!parsed) { console.warn('[agent] JSON no parseable, stop_reason=' + (res.data?.stop_reason||'?') + ' texto=' + (res.data?.content?.[0]?.text||'').slice(0,200)); return errResult('Respuesta no parseable.'); } return normalize(parsed);
-    } catch (err) {
-      lastErr = err;
-      const status = err?.response?.status;
-      const body   = err?.response?.data ? JSON.stringify(err.response.data) : '';
-      console.warn(`[agent] Claude ${status} intento ${attempt}/${MAX_RETRIES}: ${body.slice(0,150)}`);
-      if (new Set([429,529,503,502]).has(status) && attempt < MAX_RETRIES) {
-        await sleep(10000 * attempt);
-        continue;
-      }
-      break;
-    }
+  const full = await callClaude(SYSTEM_PROMPT_FULL, messageContent, apiKey);
+
+  if (!full || full._error) {
+    const body = full?._lastErr?.response?.data ? JSON.stringify(full._lastErr.response.data).slice(0,300) : '';
+    return errResult(`Error Claude (${full?._lastErr?.response?.status}): ${full?._lastErr?.message}`, body||'Sin respuesta.');
   }
-  const body = lastErr?.response?.data ? JSON.stringify(lastErr.response.data).slice(0,300) : '';
-  return errResult(`Error Claude (${lastErr?.response?.status}): ${lastErr?.message}`, body||'Sin respuesta.');
+
+  const result = normalize(full);
+
+  // Guardar en caché visual para SKUs que compartan esta imagen
+  if (imageUrl && result.estado_visual !== 'ERROR_DESCARGA') {
+    visualCache.set(imageUrl, { estado_visual: result.estado_visual, analisis_visual: result.analisis_visual });
+    console.log(`[agent] visual cacheada: ${result.estado_visual} → ${imageUrl.slice(-55)}`);
+  }
+
+  return result;
 }
 
 export default auditScrape;

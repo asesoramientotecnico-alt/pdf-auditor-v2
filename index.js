@@ -113,16 +113,27 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-// Extrae texto de un PDF con pdfjs-dist, lo normaliza y devuelve su hash SHA-256
-// Compara el CONTENIDO real, no los bytes. Evita falsos positivos por metadatos/timestamps.
-async function contentHash(buf) {
-  // Validar que el buffer sea un PDF real (empieza con %PDF)
+function extractVersion(text) {
+  const patterns = [
+    /\bV\d{4}\b/,
+    /[Vv]ersi[oó]n\s*:?\s*[\d][\d\-.\/]*/,
+    /[Rr]ev(?:\.|\s|isi[oó]n)\s*:?\s*[\d][\d\-.\/]*/,
+    /[Ee]dici[oó]n\s*:?\s*\d[\d\-.\/]*/,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return m[0].replace(/\s+/g, ' ').trim();
+  }
+  return '';
+}
+
+// Extrae texto de un PDF con pdfjs-dist, normaliza y devuelve hash SHA-256 + versión
+async function extractPdfContent(buf) {
   const header = buf.slice(0, 5).toString('ascii');
   if (!header.startsWith('%PDF')) {
     const preview = buf.slice(0, 120).toString('utf-8').replace(/\s+/g, ' ').trim();
     console.warn('[pdf] El buffer descargado no es un PDF. Primeros bytes:', preview);
-    // Devolver hash de bytes igual para que al menos la comparacion sea consistente
-    return sha256(buf);
+    return { hash: sha256(buf), version: '' };
   }
 
   try {
@@ -142,6 +153,8 @@ async function contentHash(buf) {
     }
     await doc.destroy();
 
+    const version = extractVersion(fullText);
+
     const normalized = fullText
       .toLowerCase()
       .replace(/,/g, '.')
@@ -150,34 +163,31 @@ async function contentHash(buf) {
 
     if (normalized.length < 20) {
       console.warn('[pdf] Texto extraido muy corto, usando hash de bytes');
-      return sha256(buf);
+      return { hash: sha256(buf), version };
     }
-    return crypto.createHash('sha256').update(normalized).digest('hex');
+    return { hash: crypto.createHash('sha256').update(normalized).digest('hex'), version };
   } catch (err) {
     console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,80));
-    return sha256(buf);
+    return { hash: sha256(buf), version: '' };
   }
 }
 
 async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
-  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtDrive: '' };
+  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
 
-  // Construir URL completa del PDF web: base + nombre de archivo
   let urlWeb = '';
   if (urlFtBase) {
-    // Si col9 ya termina en extensión de archivo (.pdf, .PDF, .xlsx, etc.)
-    // es una URL completa — no concatenar col10
     const isCompleteUrl = /\.\w{2,5}$/i.test(urlFtBase.split('?')[0].split('#')[0]);
     if (isCompleteUrl || !nombreArchivo) {
       urlWeb = urlFtBase;
     } else {
-      // col9 es base path, col10 es el nombre del archivo
       const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
       urlWeb = base + nombreArchivo;
     }
   }
 
   result.urlFtDrive = urlDriveRaw || '';
+  result.urlFtWeb   = urlWeb;
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
@@ -187,12 +197,15 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
 
   const errs = [];
   if (webRes.status === 'fulfilled') {
-    result.hashWeb = await contentHash(webRes.value);
+    const { hash, version } = await extractPdfContent(webRes.value);
+    result.hashWeb    = hash;
+    result.versionPdf = version;
   } else {
     errs.push(`PDF web: ${webRes.reason?.message || webRes.reason}`);
   }
   if (driveRes.status === 'fulfilled') {
-    result.hashMaestro = await contentHash(driveRes.value);
+    const { hash } = await extractPdfContent(driveRes.value);
+    result.hashMaestro = hash;
   } else {
     errs.push(`PDF Drive: ${driveRes.reason?.message || driveRes.reason}`);
   }
@@ -292,7 +305,10 @@ async function writeReport(filePath, results) {
     { header: 'Discrepancias',               key: 'discrepancias',   width: 65 },
     { header: 'Recomendaciones',             key: 'recomendaciones', width: 55 },
     { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 },
-    { header: 'Link FT Drive (maestro)',     key: 'urlFtDrive',      width: 80 }
+    { header: 'Link FT Drive (maestro)',     key: 'urlFtDrive',      width: 80 },
+    { header: 'URL Imagen Auditada',         key: 'urlImagen',       width: 80 },
+    { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',        width: 80 },
+    { header: 'Version PDF',                 key: 'versionPdf',      width: 20 },
   ];
 
   const header = ws.getRow(1);
@@ -313,11 +329,13 @@ async function writeReport(filePath, results) {
   results.forEach((r) => {
     const row = ws.addRow({
       sku: r.sku, textoComercial: r.textoComercial, urlFamiq: r.urlProducto,
-      integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro, urlFtDrive: r.urlFtDrive || '',
+      integridad: r.integridad, hashWeb: r.hashWeb, hashMaestro: r.hashMaestro,
       estadoVisual: r.estadoVisual, analisisVisual: r.analisisVisual,
       estadoTecnico: r.estadoTecnico, validaciones: r.validaciones,
       discrepancias: r.discrepancias, recomendaciones: r.recomendaciones,
-      propuesta: r.propuesta, urlFtDrive: r.urlFtDrive || ''
+      propuesta: r.propuesta,
+      urlFtDrive: r.urlFtDrive || '', urlImagen: r.urlImagen || '',
+      urlFtWeb: r.urlFtWeb || '', versionPdf: r.versionPdf || ''
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
@@ -329,16 +347,16 @@ async function writeReport(filePath, results) {
     paint('estadoVisual', colorFor(r.estadoVisual));
     paint('estadoTecnico',colorFor(r.estadoTecnico));
 
-    if (r.urlProducto) {
-      const c = row.getCell('urlFamiq');
-      c.value = { text: r.urlProducto, hyperlink: r.urlProducto };
-    if (r.urlFtDrive) {
-      const cft = row.getCell('urlFtDrive');
-      cft.value = { text: r.urlFtDrive, hyperlink: r.urlFtDrive };
-      cft.font  = { color: { argb: 'FF0563C1' }, underline: true };
-    }
+    const linkCell = (key, url) => {
+      if (!url) return;
+      const c = row.getCell(key);
+      c.value = { text: url, hyperlink: url };
       c.font  = { color: { argb: 'FF0563C1' }, underline: true };
-    }
+    };
+    linkCell('urlFamiq',  r.urlProducto);
+    linkCell('urlFtDrive', r.urlFtDrive);
+    linkCell('urlImagen',  r.urlImagen);
+    linkCell('urlFtWeb',   r.urlFtWeb);
   });
 
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
@@ -354,7 +372,8 @@ async function processRow(row, browser) {
     integridad: 'ERROR', hashWeb: '', hashMaestro: '',
     estadoVisual: 'ERROR', analisisVisual: '',
     estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
-    recomendaciones: '', propuesta: ''
+    recomendaciones: '', propuesta: '',
+    urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: ''
   };
 
   // 1) Integridad PDF (con cache — si el mismo PDF aparece en varias filas, se descarga una sola vez)
@@ -364,6 +383,8 @@ async function processRow(row, browser) {
     base.hashWeb     = pdf.hashWeb;
     base.hashMaestro = pdf.hashMaestro;
     base.urlFtDrive  = pdf.urlFtDrive || row.linkFtDrive || '';
+    base.urlFtWeb    = pdf.urlFtWeb   || '';
+    base.versionPdf  = pdf.versionPdf || '';
     if (pdf.detalle && pdf.integridad !== 'OK') {
       base.discrepancias = `[PDF] ${pdf.detalle}`;
     }
@@ -381,6 +402,7 @@ async function processRow(row, browser) {
   if (scrape.error && row.urlImagen) {
     scrape.imagen = row.urlImagen;
   }
+  base.urlImagen = scrape.imagen || row.urlImagen || '';
 
   // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
@@ -437,7 +459,8 @@ async function main() {
           integridad: 'ERROR', hashWeb: '', hashMaestro: '',
           estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
           estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
-          recomendaciones: '', propuesta: ''
+          recomendaciones: '', propuesta: '',
+          urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);

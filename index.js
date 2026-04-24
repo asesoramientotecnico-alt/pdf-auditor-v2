@@ -31,8 +31,32 @@ const SHEETS_SCOPES = [
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 // -------------------- Cache de PDFs --------------------
-// Evita descargar el mismo PDF dos veces cuando varias filas apuntan al mismo archivo
-const pdfCache = new Map(); // url -> { hash, buf }
+// In-memory buffer cache: evita descargar el mismo PDF dos veces en la misma ejecución
+const pdfCache = new Map(); // url -> Buffer
+
+// Persistent hash cache: evita re-hashear PDFs ya procesados en ejecuciones anteriores
+const PDF_HASH_CACHE_FILE = 'pdf_hash_cache.json';
+let pdfHashCache = {};
+
+function loadPdfHashCache() {
+  try {
+    if (fs.existsSync(PDF_HASH_CACHE_FILE)) {
+      pdfHashCache = JSON.parse(fs.readFileSync(PDF_HASH_CACHE_FILE, 'utf8')) || {};
+      console.log(`[pdfcache] ${Object.keys(pdfHashCache).length} entradas cargadas`);
+    }
+  } catch (err) {
+    console.warn(`[pdfcache] No se pudo leer: ${err?.message}`);
+    pdfHashCache = {};
+  }
+}
+
+function savePdfHashCache() {
+  try {
+    fs.writeFileSync(PDF_HASH_CACHE_FILE, JSON.stringify(pdfHashCache, null, 2), 'utf8');
+  } catch (err) {
+    console.warn(`[pdfcache] No se pudo escribir: ${err?.message}`);
+  }
+}
 
 function col(row, oneBasedIndex) {
   const v = row[oneBasedIndex - 1];
@@ -172,6 +196,18 @@ async function extractPdfContent(buf) {
   }
 }
 
+async function getHashForUrl(url) {
+  if (pdfHashCache[url]) {
+    console.log(`[pdfcache] hit: ${url.slice(0, 70)}`);
+    return pdfHashCache[url];
+  }
+  const buf = await downloadBufferWithCache(url);
+  const result = await extractPdfContent(buf);
+  pdfHashCache[url] = result;
+  savePdfHashCache();
+  return result;
+}
+
 async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
 
@@ -191,21 +227,19 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
-    urlWeb   ? downloadBufferWithCache(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
-    urlDrive ? downloadBufferWithCache(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
+    urlWeb   ? getHashForUrl(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
+    urlDrive ? getHashForUrl(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
   ]);
 
   const errs = [];
   if (webRes.status === 'fulfilled') {
-    const { hash, version } = await extractPdfContent(webRes.value);
-    result.hashWeb    = hash;
-    result.versionPdf = version;
+    result.hashWeb    = webRes.value.hash;
+    result.versionPdf = webRes.value.version;
   } else {
     errs.push(`PDF web: ${webRes.reason?.message || webRes.reason}`);
   }
   if (driveRes.status === 'fulfilled') {
-    const { hash } = await extractPdfContent(driveRes.value);
-    result.hashMaestro = hash;
+    result.hashMaestro = driveRes.value.hash;
   } else {
     errs.push(`PDF Drive: ${driveRes.reason?.message || driveRes.reason}`);
   }
@@ -309,6 +343,7 @@ async function writeReport(filePath, results) {
     { header: 'URL Imagen Auditada',         key: 'urlImagen',       width: 80 },
     { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',        width: 80 },
     { header: 'Version PDF',                 key: 'versionPdf',      width: 20 },
+    { header: 'Descripcion Web',             key: 'descripcionWeb',  width: 70 },
   ];
 
   const header = ws.getRow(1);
@@ -335,7 +370,8 @@ async function writeReport(filePath, results) {
       discrepancias: r.discrepancias, recomendaciones: r.recomendaciones,
       propuesta: r.propuesta,
       urlFtDrive: r.urlFtDrive || '', urlImagen: r.urlImagen || '',
-      urlFtWeb: r.urlFtWeb || '', versionPdf: r.versionPdf || ''
+      urlFtWeb: r.urlFtWeb || '', versionPdf: r.versionPdf || '',
+      descripcionWeb: r.descripcionWeb || ''
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
@@ -373,7 +409,8 @@ async function processRow(row, browser) {
     estadoVisual: 'ERROR', analisisVisual: '',
     estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
     recomendaciones: '', propuesta: '',
-    urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: ''
+    urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
+    descripcionWeb: ''
   };
 
   // 1) Integridad PDF (con cache — si el mismo PDF aparece en varias filas, se descarga una sola vez)
@@ -404,6 +441,9 @@ async function processRow(row, browser) {
   }
   base.urlImagen = scrape.imagen || row.urlImagen || '';
 
+  // Capturar descripción antes de que auditScrape la elimine de su copia local
+  base.descripcionWeb = scrape.especificaciones?.['__descripcion_larga__']?.slice(0, 600) || '';
+
   // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
   base.estadoVisual    = audit.estado_visual;
@@ -428,6 +468,7 @@ async function main() {
   console.log('=== Agente Auditor de Calidad Web ===');
   console.log(`Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
   console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
+  loadPdfHashCache();
 
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY no seteada.');
 
@@ -460,7 +501,8 @@ async function main() {
           estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
           estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
           recomendaciones: '', propuesta: '',
-          urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: ''
+          urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
+          descripcionWeb: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);

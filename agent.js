@@ -1,6 +1,7 @@
 // agent.js
 import axios from 'axios';
 import https from 'node:https';
+import sharp from 'sharp';
 
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
@@ -24,7 +25,6 @@ const SYSTEM_PROMPT = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de 
 Inputs:
 - texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
 - titulo_web: titulo publicado en famiq.com.ar
-- descripcion_web: texto descriptivo de la pagina
 - specs: tabla de especificaciones tecnicas
 - imagen adjunta: foto del producto tomada de la columna M del inventario
 
@@ -35,13 +35,31 @@ REGLA CRITICA PARA IMAGEN:
 Validar:
 A) VISUAL: la imagen adjunta corresponde al texto_comercial? (COHERENTE/ERROR/SIN_IMAGEN segun regla)
 B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
-C) TEXTO WEB vs specs: titulo_web y descripcion_web coinciden con specs?
+C) TEXTO WEB vs specs: titulo_web coincide con specs?
 
 Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU.
 Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
 
 Responde SOLO JSON valido:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+
+async function resizeImage(buf) {
+  try {
+    const MAX_PX = 640;
+    const img = sharp(buf);
+    const meta = await img.metadata();
+    if ((meta.width || 0) <= MAX_PX && (meta.height || 0) <= MAX_PX) return { buf, mime: null };
+    const out = await img
+      .resize(MAX_PX, MAX_PX, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer();
+    console.log(`[agent] resize ${meta.width}x${meta.height}→≤${MAX_PX}px (${out.length}b)`);
+    return { buf: out, mime: 'image/jpeg' };
+  } catch (e) {
+    console.warn(`[agent] resize skip: ${e?.message?.slice(0, 60)}`);
+    return { buf, mime: null };
+  }
+}
 
 // Resultado posible: { data, mime } | null (sin URL) | { downloadError: true, status, message }
 async function fetchImageAsBase64(imageUrl) {
@@ -61,10 +79,13 @@ async function fetchImageAsBase64(imageUrl) {
           'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
         }
       });
-      const buf = Buffer.from(res.data);
-      if (buf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${buf.length}`); return null; }
+      const rawBuf = Buffer.from(res.data);
+      if (rawBuf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${rawBuf.length}`); return null; }
       let mime = (res.headers['content-type'] || '').split(';')[0].trim();
       if (!mime.startsWith('image/')) mime = 'image/jpeg';
+      const resized = await resizeImage(rawBuf);
+      const buf = resized.buf;
+      if (resized.mime) mime = resized.mime;
       console.log(`[agent] imagen ok (${buf.length} bytes)`);
       return { data: buf.toString('base64'), mime };
     } catch (err) {
@@ -126,11 +147,10 @@ export async function auditScrape(scrape, opts = {}) {
   delete specs.__descripcion_larga__;
   delete specs.__sku_web__;
 
-  // User message compacto — sin campos redundantes
+  // User message compacto — descripcion_web excluida (texto genérico de categoría, no aporta)
   const payload = {
     texto_comercial: opts.descripcionMaestra || '',
     titulo_web:      scrape.titulo || '',
-    descripcion_web: desc.slice(0, 400),  // limitar descripcion a 800 chars
     specs
   };
 

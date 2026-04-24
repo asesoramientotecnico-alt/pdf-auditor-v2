@@ -15,8 +15,9 @@ jobs:
 
     env:
       NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CONCURRENCY: '3'
+      CONCURRENCY: '8'
       REPORT_RECIPIENT: jortiz@famiq.com.ar
       INPUT_XLSX: prueba_robot_FT_2.xlsx
       SPREADSHEET_ID: 1QYT15W8NJ5M2UPVyvBy-QqfnOA4fEbTbbZfy7qrNLrY

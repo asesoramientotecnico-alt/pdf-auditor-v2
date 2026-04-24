@@ -62,6 +62,20 @@ Recomendaciones: titulo mal redactado, specs incompletas.
 Responde SOLO JSON valido:
 {"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
 
+// Prompt de verificación visual: sólo se usa cuando la primera revisión dio ERROR.
+// Sesgo conservador → prefiere COHERENTE ante duda razonable.
+const SYSTEM_PROMPT_VERIFY = `Inspector visual senior de Famiq. Una primera revisión IA sugirió que la imagen NO corresponde al producto declarado. Tu tarea es verificar críticamente ese diagnóstico antes de confirmarlo como ERROR.
+
+Reglas para la verificación:
+1. La calidad de la foto puede ser baja (thumbnail). No descartes el producto sólo porque cuesta verlo.
+2. Componentes accesorios (actuadores, conexiones, soportes, manómetros) suelen tapar partes distintivas del producto principal. Eso no implica que el producto sea otro.
+3. Tipos similares pueden verse parecidos a baja resolución (mariposa vs bola con actuador, codo vs T desde un ángulo, conexion SMS vs DIN).
+4. Solo CONFIRMA ERROR si ves CLARAMENTE caracteristicas que CONTRADICEN el producto declarado (ej: sin duda es una bomba en vez de una valvula, o claramente es un caño recto cuando deberia ser un codo).
+5. Si tenes cualquier duda razonable o la foto no permite descartar el producto declarado: respondé COHERENTE.
+
+Responde SOLO JSON valido:
+{"estado_visual":"COHERENTE"|"ERROR","analisis_visual":"justificacion detallada de por que confirmas o cambias el diagnostico","confianza":"alta"|"media"|"baja"}`;
+
 // Cache visual en memoria: image_url -> { estado_visual, analisis_visual }
 // Garantiza que la misma foto siempre recibe el mismo diagnóstico visual en una ejecución
 const visualCache = new Map();
@@ -262,7 +276,36 @@ export async function auditScrape(scrape, opts = {}) {
 
   const result = normalize(full);
 
-  // Guardar en caché visual para SKUs que compartan esta imagen
+  // ── Verificación 2-pass: si la primera revisión dijo ERROR, mirar de nuevo
+  // con prompt crítico antes de confirmar. Reduce falsos positivos en imágenes ambiguas.
+  if (result.estado_visual === 'ERROR' && imgResult) {
+    console.log(`[agent] visual=ERROR → 2-pass verificación...`);
+    const verifyContent = [
+      { type: 'image', source: { type: 'base64', media_type: imgResult.mime, data: imgResult.data } },
+      { type: 'text', text:
+        'Producto declarado: ' + (opts.descripcionMaestra || '') +
+        '\nDiagnóstico inicial: ' + (result.analisis_visual || '') +
+        '\nResponde SOLO el JSON indicado.' }
+    ];
+    await throttledClaude();
+    const verify = await callClaude(SYSTEM_PROMPT_VERIFY, verifyContent, apiKey);
+    if (verify && !verify._error) {
+      const v = String(verify.estado_visual || '').toUpperCase();
+      const conf = String(verify.confianza || '').toLowerCase();
+      if (v === 'COHERENTE') {
+        console.log(`[agent] 2-pass: ERROR → COHERENTE (confianza: ${conf||'?'})`);
+        result.estado_visual   = 'COHERENTE';
+        result.analisis_visual = `[Verificado 2-pass, confianza ${conf||'?'}] ${verify.analisis_visual || ''}`.trim();
+      } else {
+        console.log(`[agent] 2-pass: ERROR confirmado (confianza: ${conf||'?'})`);
+        result.analisis_visual = `[Confirmado 2-pass, confianza ${conf||'?'}] ${result.analisis_visual}`;
+      }
+    } else {
+      console.warn('[agent] 2-pass falló — manteniendo ERROR del primer pase');
+    }
+  }
+
+  // Guardar en caché visual el resultado FINAL (post-verificación), no el primer pase.
   if (imageUrl && result.estado_visual !== 'ERROR_DESCARGA') {
     visualCache.set(imageUrl, { estado_visual: result.estado_visual, analisis_visual: result.analisis_visual });
     console.log(`[agent] visual cacheada: ${result.estado_visual} → ${imageUrl.slice(-55)}`);

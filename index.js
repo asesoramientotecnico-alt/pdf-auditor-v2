@@ -35,24 +35,35 @@ const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 const pdfCache = new Map(); // url -> Buffer
 
 // Persistent hash cache: evita re-hashear PDFs ya procesados en ejecuciones anteriores
+// Subir CACHE_SCHEMA invalida el cache existente (ej: al cambiar extractVersion)
 const PDF_HASH_CACHE_FILE = 'pdf_hash_cache.json';
+const CACHE_SCHEMA = 2;
 let pdfHashCache = {};
 
 function loadPdfHashCache() {
   try {
     if (fs.existsSync(PDF_HASH_CACHE_FILE)) {
-      pdfHashCache = JSON.parse(fs.readFileSync(PDF_HASH_CACHE_FILE, 'utf8')) || {};
-      console.log(`[pdfcache] ${Object.keys(pdfHashCache).length} entradas cargadas`);
+      const data = JSON.parse(fs.readFileSync(PDF_HASH_CACHE_FILE, 'utf8'));
+      if (data?._schema === CACHE_SCHEMA && data?.entries) {
+        pdfHashCache = data.entries;
+        console.log(`[pdfcache] ${Object.keys(pdfHashCache).length} entradas cargadas (schema ${CACHE_SCHEMA})`);
+        return;
+      }
+      console.log(`[pdfcache] schema obsoleto (era ${data?._schema||'none'}, ahora ${CACHE_SCHEMA}) — regenerando`);
     }
   } catch (err) {
     console.warn(`[pdfcache] No se pudo leer: ${err?.message}`);
-    pdfHashCache = {};
   }
+  pdfHashCache = {};
 }
 
 function savePdfHashCache() {
   try {
-    fs.writeFileSync(PDF_HASH_CACHE_FILE, JSON.stringify(pdfHashCache, null, 2), 'utf8');
+    fs.writeFileSync(
+      PDF_HASH_CACHE_FILE,
+      JSON.stringify({ _schema: CACHE_SCHEMA, entries: pdfHashCache }, null, 2),
+      'utf8'
+    );
   } catch (err) {
     console.warn(`[pdfcache] No se pudo escribir: ${err?.message}`);
   }
@@ -138,15 +149,22 @@ function sha256(buf) {
 }
 
 function extractVersion(text) {
+  // Detecta: V4.2019, V4-2019, V2019, Versión 4.2019, Rev. 1.2, Edición 3
   const patterns = [
-    /\bV\d{4}\b/,
-    /[Vv]ersi[oó]n\s*:?\s*[\d][\d\-.\/]*/,
-    /[Rr]ev(?:\.|\s|isi[oó]n)\s*:?\s*[\d][\d\-.\/]*/,
-    /[Ee]dici[oó]n\s*:?\s*\d[\d\-.\/]*/,
+    /\bV\s*\d+\s*[.\-\/]\s*\d+(?:\s*[.\-\/]\s*\d+)*/i,  // V4.2019 (con separador, tolera espacios)
+    /\bV\s*\d{3,}\b/i,                                   // V2019 (sin separador, ≥3 dígitos)
+    /[Vv]ersi[oó]n\s*:?\s*\d[\d\s\-.\/]*\d?/,
+    /[Rr]ev(?:\.|\s|isi[oó]n)\s*:?\s*\d[\d\s\-.\/]*\d?/,
+    /[Ee]dici[oó]n\s*:?\s*\d[\d\s\-.\/]*\d?/,
   ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m) return m[0].replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < patterns.length; i++) {
+    const m = text.match(patterns[i]);
+    if (m) {
+      // Patrones V-compactos: quitar todo espacio (V 4 . 2019 → V4.2019)
+      if (i < 2) return m[0].replace(/\s+/g, '');
+      // Patrones con palabra (Versión/Rev/Edición): colapsar espacios
+      return m[0].replace(/\s+/g, ' ').trim();
+    }
   }
   return '';
 }
@@ -178,6 +196,7 @@ async function extractPdfContent(buf) {
     await doc.destroy();
 
     const version = extractVersion(fullText);
+    console.log(`[pdf] version="${version||'(no detectada)'}" chars=${fullText.length}`);
 
     const normalized = fullText
       .toLowerCase()

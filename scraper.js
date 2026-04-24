@@ -83,7 +83,12 @@ export async function scrapeProduct(url, _ignoredBrowser = null, urlImagenDirect
 
   // Descripcion larga
   const desc = productoData.descripcion_larga || productoData.descripcion || productoData.texto || '';
-  if (desc) especificaciones['__descripcion_larga__'] = String(desc).slice(0, 4000);
+  if (desc) {
+    especificaciones['__descripcion_larga__'] = String(desc).slice(0, 4000);
+    console.log(`[scraper] descripcion="${String(desc).slice(0, 80).replace(/\n/g, ' ')}..."`);
+  } else {
+    console.log(`[scraper] descripcion=SIN DESCRIPCION (API no devolvio el campo)`);
+  }
 
   // SKU web
   const sku = productoData.codigo || productoData.sku || '';

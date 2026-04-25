@@ -90,8 +90,31 @@ function driveFileId(url) {
   return m ? m[1] : null;
 }
 
-// Descarga un archivo de Google Drive usando la API autenticada (evita el login-wall)
-async function downloadDriveBuffer(fileId) {
+// Descarga Drive de forma anónima (funciona si el archivo es "Cualquiera con el enlace")
+// Agrega &confirm=t para saltear la pantalla de confirmación de archivos grandes
+async function downloadDriveAnonymous(fileId, timeout = 60000) {
+  const url = `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`;
+  const res = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout,
+    maxRedirects: 10,
+    httpsAgent: insecureAgent,
+    validateStatus: (s) => s >= 200 && s < 400,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+  });
+  const buf = Buffer.from(res.data);
+  if (buf.length === 0) throw new Error('respuesta vacía');
+  // Si Drive devolvió HTML (login wall, confirmación) en vez del PDF, rechazar
+  const header = buf.slice(0, 5).toString('ascii');
+  if (!header.startsWith('%PDF')) {
+    const preview = buf.slice(0, 120).toString('utf-8').replace(/\s+/g, ' ');
+    throw new Error(`no es PDF — posiblemente no es público. Preview: ${preview.slice(0, 80)}`);
+  }
+  return buf;
+}
+
+// Descarga Drive autenticada con la cuenta de servicio (para archivos privados compartidos con el SA)
+async function downloadDriveAuthenticated(fileId) {
   const auth  = new google.auth.GoogleAuth({ scopes: SHEETS_SCOPES });
   const drive = google.drive({ version: 'v3', auth });
   const res   = await drive.files.get(
@@ -99,7 +122,7 @@ async function downloadDriveBuffer(fileId) {
     { responseType: 'arraybuffer' }
   );
   const buf = Buffer.from(res.data);
-  if (buf.length === 0) throw new Error(`Drive devolvió respuesta vacía (fileId=${fileId}) — verificar permisos`);
+  if (buf.length === 0) throw new Error(`respuesta vacía — verificar que el SA tenga acceso al archivo`);
   return buf;
 }
 
@@ -109,12 +132,21 @@ async function downloadBufferWithCache(url, { timeout = 60000, retries = 3 } = {
     return pdfCache.get(cacheKey);
   }
 
-  // Si es un archivo de Google Drive, usar la API autenticada
+  // Archivos de Google Drive: intentar anónimo primero, luego autenticado
   const fileId = driveFileId(url);
   if (fileId) {
-    const buf = await downloadDriveBuffer(fileId);
-    pdfCache.set(cacheKey, buf);
-    return buf;
+    try {
+      const buf = await downloadDriveAnonymous(fileId, timeout);
+      console.log(`[pdf] Drive anónimo OK (${buf.length} bytes) fileId=${fileId}`);
+      pdfCache.set(cacheKey, buf);
+      return buf;
+    } catch (anonErr) {
+      console.warn(`[pdf] Drive anónimo falló: ${anonErr.message} — usando API autenticada...`);
+      const buf = await downloadDriveAuthenticated(fileId);
+      console.log(`[pdf] Drive autenticado OK (${buf.length} bytes) fileId=${fileId}`);
+      pdfCache.set(cacheKey, buf);
+      return buf;
+    }
   }
 
   // Para URLs externas (PDF publicado en web de Famiq), usar axios normal

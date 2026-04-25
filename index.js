@@ -25,7 +25,6 @@ const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
 const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '8', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
 const AUDIT_MODE      = (process.env.AUDIT_MODE || 'sync').toLowerCase();  // 'sync' | 'batch'
-const DEBUG_SKU       = (process.env.DEBUG_SKU || '').trim();              // si se setea, solo audita ese SKU
 
 const SHEETS_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets.readonly',
@@ -239,9 +238,9 @@ async function extractPdfContent(buf) {
 
     if (normalized.length < 20) {
       console.warn('[pdf] Texto extraido muy corto, usando hash de bytes');
-      return { hash: sha256(buf), version, pageCount, charCount: normalized.length, _normalized: normalized };
+      return { hash: sha256(buf), version, pageCount, charCount: normalized.length };
     }
-    return { hash: crypto.createHash('sha256').update(normalized).digest('hex'), version, pageCount, charCount: normalized.length, _normalized: normalized };
+    return { hash: crypto.createHash('sha256').update(normalized).digest('hex'), version, pageCount, charCount: normalized.length };
   } catch (err) {
     console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,80));
     return { hash: sha256(buf), version: '', pageCount: 0, charCount: 0 };
@@ -347,38 +346,6 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
       result.detalleDiff = describePdfDiff(webRes.value, driveRes.value);
     }
     console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}… diff="${result.detalleDiff||'-'}"`);
-
-    // Diagnóstico profundo solo cuando se pide un SKU específico
-    if (DEBUG_SKU && result.integridad === 'DESACTUALIZADO') {
-      const bufWeb   = pdfCache.get(urlWeb);
-      const bufDrive = pdfCache.get(urlDrive);
-      if (bufWeb && bufDrive) {
-        const [infoWeb, infoDrive] = await Promise.all([
-          extractPdfContent(bufWeb),
-          extractPdfContent(bufDrive)
-        ]);
-        const normWeb   = infoWeb._normalized   || '';
-        const normDrive = infoDrive._normalized || '';
-        let firstDiff = -1;
-        const minLen = Math.min(normWeb.length, normDrive.length);
-        for (let i = 0; i < minLen; i++) {
-          if (normWeb[i] !== normDrive[i]) { firstDiff = i; break; }
-        }
-        if (firstDiff === -1 && normWeb.length !== normDrive.length) firstDiff = minLen;
-        if (firstDiff >= 0) {
-          const ctx = 80;
-          const start = Math.max(0, firstDiff - ctx);
-          console.log(`[debug-pdf] Primer diferencia en posición ${firstDiff}:`);
-          console.log(`[debug-pdf]   WEB  : "...${normWeb.slice(start, firstDiff + ctx)}..."`);
-          console.log(`[debug-pdf]   DRIVE: "...${normDrive.slice(start, firstDiff + ctx)}..."`);
-        } else {
-          console.log(`[debug-pdf] Textos normalizados idénticos pero hashes distintos — diferencia solo en metadatos PDF`);
-        }
-        console.log(`[debug-pdf] Páginas: web=${infoWeb.pageCount} drive=${infoDrive.pageCount}`);
-        console.log(`[debug-pdf] Chars  : web=${infoWeb.charCount} drive=${infoDrive.charCount}`);
-        console.log(`[debug-pdf] Versión: web="${infoWeb.version||'-'}" drive="${infoDrive.version||'-'}"`);
-      }
-    }
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
@@ -737,18 +704,11 @@ async function main() {
   console.log('=== Agente Auditor de Calidad Web ===');
   console.log(`Modo: ${AUDIT_MODE.toUpperCase()} | Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
   console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
-  if (DEBUG_SKU) console.log(`[debug] Filtro SKU activo: solo "${DEBUG_SKU}"`);
   loadPdfHashCache();
 
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY no seteada.');
 
-  let rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
-  if (DEBUG_SKU) {
-    const before = rows.length;
-    rows = rows.filter(r => String(r.sku).trim() === DEBUG_SKU);
-    if (rows.length === 0) throw new Error(`SKU "${DEBUG_SKU}" no encontrado en la hoja (${before} filas totales).`);
-    console.log(`[debug] Filtrando a 1 fila (de ${before}): SKU ${rows[0].sku} — "${rows[0].textoComercial}"`);
-  }
+  const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
   console.log(`Filas a auditar: ${rows.length}`);
 
   const browser = await launchBrowser();

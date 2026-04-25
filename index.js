@@ -424,26 +424,32 @@ async function writeReport(filePath, results) {
 
   ws.columns = [
     { header: 'SKU',                        key: 'sku',             width: 18 },
-    { header: 'Texto Comercial',             key: 'textoComercial',  width: 55 },
-    { header: 'URL Famiq',                   key: 'urlFamiq',        width: 50 },
-    { header: 'Integridad PDF',              key: 'integridad',      width: 18 },
-    { header: 'Hash Web',                    key: 'hashWeb',         width: 66 },
-    { header: 'Hash Maestro (Drive)',         key: 'hashMaestro',     width: 66 },
-    { header: 'Estado Visual',               key: 'estadoVisual',    width: 18 },
-    { header: 'Analisis Visual',             key: 'analisisVisual',  width: 55 },
+    { header: 'Texto Comercial',             key: 'textoComercial',      width: 55 },
+    { header: 'URL Famiq',                   key: 'urlFamiq',            width: 50 },
+    // ── FOTO ──────────────────────────────────────────────────────────────────
+    { header: 'Estado Visual',               key: 'estadoVisual',        width: 18 },
+    { header: 'Analisis Visual',             key: 'analisisVisual',      width: 55 },
+    { header: 'URL Imagen Auditada',         key: 'urlImagen',           width: 80 },
+    // ── ESPECIFICACIONES TÉCNICAS ──────────────────────────────────────────────
     { header: 'Estado Tecnico',              key: 'estadoTecnico',       width: 16 },
     { header: 'Validaciones',                key: 'validaciones',        width: 65 },
+    // ── DESCRIPCIÓN WEB ───────────────────────────────────────────────────────
+    { header: 'Estado Descripcion',          key: 'estadoDescripcion',   width: 20 },
+    { header: 'Analisis Descripcion',        key: 'analisisDescripcion', width: 65 },
+    { header: 'Descripcion Web',             key: 'descripcionWeb',      width: 70 },
+    // ── FICHA TÉCNICA PDF ─────────────────────────────────────────────────────
+    { header: 'Integridad PDF',              key: 'integridad',          width: 18 },
+    { header: 'Diferencia PDF',              key: 'detalleDiff',         width: 70 },
+    { header: 'Version PDF',                 key: 'versionPdf',          width: 20 },
+    { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',            width: 80 },
+    { header: 'Link FT Drive (maestro)',     key: 'urlFtDrive',          width: 80 },
+    // ── RESULTADO ─────────────────────────────────────────────────────────────
     { header: 'Discrepancias',               key: 'discrepancias',       width: 65 },
     { header: 'Recomendaciones',             key: 'recomendaciones',     width: 55 },
     { header: 'Propuesta de Correccion',     key: 'propuesta',           width: 55 },
-    { header: 'Estado Descripcion',          key: 'estadoDescripcion',   width: 20 },
-    { header: 'Analisis Descripcion',        key: 'analisisDescripcion', width: 65 },
-    { header: 'Link FT Drive (maestro)',     key: 'urlFtDrive',      width: 80 },
-    { header: 'URL Imagen Auditada',         key: 'urlImagen',       width: 80 },
-    { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',        width: 80 },
-    { header: 'Version PDF',                 key: 'versionPdf',      width: 20 },
-    { header: 'Diferencia PDF',              key: 'detalleDiff',     width: 70 },
-    { header: 'Descripcion Web',             key: 'descripcionWeb',  width: 70 },
+    // ── DATOS TÉCNICOS (hashes) ───────────────────────────────────────────────
+    { header: 'Hash Web',                    key: 'hashWeb',             width: 66 },
+    { header: 'Hash Maestro (Drive)',        key: 'hashMaestro',         width: 66 },
   ];
 
   const header = ws.getRow(1);

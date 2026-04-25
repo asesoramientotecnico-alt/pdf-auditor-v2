@@ -37,7 +37,7 @@ const pdfCache = new Map(); // url -> Buffer
 // Persistent hash cache: evita re-hashear PDFs ya procesados en ejecuciones anteriores
 // Subir CACHE_SCHEMA invalida el cache existente (ej: al cambiar extractVersion)
 const PDF_HASH_CACHE_FILE = 'pdf_hash_cache.json';
-const CACHE_SCHEMA = 2;
+const CACHE_SCHEMA = 3;
 let pdfHashCache = {};
 
 function loadPdfHashCache() {
@@ -203,26 +203,22 @@ function extractVersion(text) {
   return '';
 }
 
-// Extrae texto de un PDF con pdfjs-dist, normaliza y devuelve hash SHA-256 + versión
+// Extrae texto de un PDF con pdfjs-dist, normaliza y devuelve hash SHA-256 + metadatos para diff
 async function extractPdfContent(buf) {
   const header = buf.slice(0, 5).toString('ascii');
   if (!header.startsWith('%PDF')) {
     const preview = buf.slice(0, 120).toString('utf-8').replace(/\s+/g, ' ').trim();
     console.warn('[pdf] El buffer descargado no es un PDF. Primeros bytes:', preview);
-    return { hash: sha256(buf), version: '' };
+    return { hash: sha256(buf), version: '', pageCount: 0, charCount: 0 };
   }
 
   try {
     const uint8 = new Uint8Array(buf);
-    const loadingTask = getDocument({
-      data: uint8,
-      useSystemFonts: true,
-      disableFontFace: true,
-      verbosity: 0
-    });
+    const loadingTask = getDocument({ data: uint8, useSystemFonts: true, disableFontFace: true, verbosity: 0 });
     const doc = await loadingTask.promise;
+    const pageCount = doc.numPages;
     let fullText = '';
-    for (let p = 1; p <= doc.numPages; p++) {
+    for (let p = 1; p <= pageCount; p++) {
       const page = await doc.getPage(p);
       const tc = await page.getTextContent();
       fullText += tc.items.map(it => it.str || '').join(' ') + ' ';
@@ -230,7 +226,7 @@ async function extractPdfContent(buf) {
     await doc.destroy();
 
     const version = extractVersion(fullText);
-    console.log(`[pdf] version="${version||'(no detectada)'}" chars=${fullText.length}`);
+    console.log(`[pdf] version="${version||'(no detectada)'}" páginas=${pageCount} chars=${fullText.length}`);
 
     const normalized = fullText
       .toLowerCase()
@@ -240,13 +236,55 @@ async function extractPdfContent(buf) {
 
     if (normalized.length < 20) {
       console.warn('[pdf] Texto extraido muy corto, usando hash de bytes');
-      return { hash: sha256(buf), version };
+      return { hash: sha256(buf), version, pageCount, charCount: normalized.length };
     }
-    return { hash: crypto.createHash('sha256').update(normalized).digest('hex'), version };
+    return { hash: crypto.createHash('sha256').update(normalized).digest('hex'), version, pageCount, charCount: normalized.length };
   } catch (err) {
     console.warn('[pdf] No se pudo extraer texto, usando hash de bytes:', err?.message?.slice(0,80));
-    return { hash: sha256(buf), version: '' };
+    return { hash: sha256(buf), version: '', pageCount: 0, charCount: 0 };
   }
+}
+
+// Genera una descripción legible de las diferencias entre el PDF web y el maestro de Drive
+function describePdfDiff(web, drive) {
+  const parts = [];
+
+  // 1. Comparar versiones detectadas
+  const vWeb   = web.version   || '';
+  const vDrive = drive.version || '';
+  if (vWeb && vDrive) {
+    if (vWeb !== vDrive) {
+      parts.push(`Versión: ${vWeb} (web) → ${vDrive} (maestro)`);
+    } else {
+      parts.push(`Misma versión detectada (${vWeb})`);
+    }
+  } else if (vWeb && !vDrive) {
+    parts.push(`Versión en web: ${vWeb} — maestro sin versión detectable`);
+  } else if (!vWeb && vDrive) {
+    parts.push(`Web sin versión — maestro: ${vDrive}`);
+  }
+
+  // 2. Comparar cantidad de páginas
+  const pWeb   = web.pageCount   || 0;
+  const pDrive = drive.pageCount || 0;
+  if (pWeb > 0 && pDrive > 0 && pWeb !== pDrive) {
+    parts.push(`Páginas: ${pWeb} (web) vs ${pDrive} (maestro)`);
+  }
+
+  // 3. Comparar volumen de contenido (chars normalizados)
+  const cWeb   = web.charCount   || 0;
+  const cDrive = drive.charCount || 0;
+  if (cWeb > 0 && cDrive > 0) {
+    const diff = Math.abs(cWeb - cDrive);
+    const pct  = Math.round((diff / Math.max(cWeb, cDrive)) * 100);
+    if (pct >= 10) {
+      parts.push(`Contenido: ${pct}% de diferencia en volumen de texto`);
+    } else if (pct > 0 && parts.length === 0) {
+      parts.push(`Diferencia menor en contenido (~${pct}%) — posiblemente metadatos o formato`);
+    }
+  }
+
+  return parts.length ? parts.join('. ') : 'Diferencia detectada sin detalle específico';
 }
 
 async function getHashForUrl(url) {
@@ -262,7 +300,7 @@ async function getHashForUrl(url) {
 }
 
 async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
-  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
+  const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', detalleDiff: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
 
   let urlWeb = '';
   if (urlFtBase) {
@@ -299,10 +337,13 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
 
   if (result.hashWeb && result.hashMaestro) {
     result.integridad = result.hashWeb === result.hashMaestro ? 'OK' : 'DESACTUALIZADO';
-    result.detalle    = result.integridad === 'OK'
-      ? 'Hash SHA-256 coincide.'
-      : 'El PDF publicado NO coincide con el maestro de Drive.';
-    console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}…`);
+    if (result.integridad === 'OK') {
+      result.detalle    = 'Hash SHA-256 coincide.';
+    } else {
+      result.detalle    = 'El PDF publicado NO coincide con el maestro de Drive.';
+      result.detalleDiff = describePdfDiff(webRes.value, driveRes.value);
+    }
+    console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}… diff="${result.detalleDiff||'-'}"`);
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
@@ -399,6 +440,7 @@ async function writeReport(filePath, results) {
     { header: 'URL Imagen Auditada',         key: 'urlImagen',       width: 80 },
     { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',        width: 80 },
     { header: 'Version PDF',                 key: 'versionPdf',      width: 20 },
+    { header: 'Diferencia PDF',              key: 'detalleDiff',     width: 70 },
     { header: 'Descripcion Web',             key: 'descripcionWeb',  width: 70 },
   ];
 
@@ -427,7 +469,7 @@ async function writeReport(filePath, results) {
       propuesta: r.propuesta,
       urlFtDrive: r.urlFtDrive || '', urlImagen: r.urlImagen || '',
       urlFtWeb: r.urlFtWeb || '', versionPdf: r.versionPdf || '',
-      descripcionWeb: r.descripcionWeb || ''
+      detalleDiff: r.detalleDiff || '', descripcionWeb: r.descripcionWeb || ''
     });
     row.alignment = { vertical: 'top', wrapText: true };
 
@@ -466,7 +508,7 @@ async function processRow(row, browser) {
     estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
     recomendaciones: '', propuesta: '',
     urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
-    descripcionWeb: ''
+    detalleDiff: '', descripcionWeb: ''
   };
 
   // 1) Integridad PDF (con cache — si el mismo PDF aparece en varias filas, se descarga una sola vez)
@@ -477,7 +519,8 @@ async function processRow(row, browser) {
     base.hashMaestro = pdf.hashMaestro;
     base.urlFtDrive  = pdf.urlFtDrive || row.linkFtDrive || '';
     base.urlFtWeb    = pdf.urlFtWeb   || '';
-    base.versionPdf  = pdf.versionPdf || '';
+    base.versionPdf  = pdf.versionPdf  || '';
+    base.detalleDiff = pdf.detalleDiff || '';
     if (pdf.detalle && pdf.integridad !== 'OK') {
       base.discrepancias = `[PDF] ${pdf.detalle}`;
     }
@@ -558,7 +601,7 @@ async function main() {
           estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
           recomendaciones: '', propuesta: '',
           urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
-          descripcionWeb: ''
+          detalleDiff: '', descripcionWeb: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);

@@ -7,6 +7,7 @@ import {
   MODEL,
   MAX_TOKENS,
   SYSTEM_PROMPT_FULL,
+  SYSTEM_PROMPT_TECHNICAL,
   SYSTEM_PROMPT_VERIFY,
   fetchImageAsBase64,
   safeParseJson,
@@ -74,13 +75,16 @@ async function buildAuditRequest(customId, scrape, opts) {
        { type:'text', text:userText }]
     : userText;
 
+  // Sin imagen: usar prompt técnico para evitar que Claude responda en lenguaje natural
+  const systemPrompt = imgResult ? SYSTEM_PROMPT_FULL : SYSTEM_PROMPT_TECHNICAL;
+
   return {
     custom_id: customId,
     params: {
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: [{ type:'text', text: SYSTEM_PROMPT_FULL, cache_control:{ type:'ephemeral' } }],
+      system: [{ type:'text', text: systemPrompt, cache_control:{ type:'ephemeral' } }],
       messages: [{ role:'user', content }]
     }
   };

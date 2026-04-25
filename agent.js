@@ -20,12 +20,13 @@ async function throttledClaude() {
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
 }
 
-// Prompt completo: visual + técnico (se usa la primera vez que aparece una imagen)
+// Prompt completo: visual + técnico + descripción (se usa la primera vez que aparece una imagen)
 const SYSTEM_PROMPT_FULL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
 Inputs:
 - texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
 - titulo_web: titulo publicado en famiq.com.ar
+- descripcion_web: descripcion generica del producto en la pagina
 - specs: tabla de especificaciones tecnicas
 - imagen adjunta: foto del producto tomada de la columna M del inventario
 
@@ -37,30 +38,33 @@ Validar:
 A) VISUAL: la imagen adjunta corresponde al texto_comercial? (COHERENTE/ERROR/SIN_IMAGEN segun regla)
 B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
+D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU.
-Recomendaciones: titulo mal redactado, specs incompletas, descripcion generica.
+Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
+Recomendaciones: titulo mal redactado, specs incompletas.
 
 Responde SOLO JSON valido:
-{"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+{"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
-// Prompt técnico: sin imagen (se usa cuando la imagen ya fue evaluada y está en caché)
+// Prompt técnico + descripción: sin imagen (se usa cuando la imagen ya fue evaluada y está en caché)
 const SYSTEM_PROMPT_TECHNICAL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
 
 Inputs:
 - texto_comercial: nombre oficial interno (FUENTE DE VERDAD)
 - titulo_web: titulo publicado en famiq.com.ar
+- descripcion_web: descripcion generica del producto en la pagina
 - specs: tabla de especificaciones tecnicas
 
-Validar SOLO la parte tecnica (sin imagen):
+Validar (sin imagen — evaluacion visual ya realizada):
 B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/DN/pulg), norma (DAN/DIN/SMS/SCH), conexion. Campo por campo.
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
+D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, specs de otro SKU.
+Errores criticos: material wrong, diametro wrong, norma wrong, specs de otro SKU, descripcion de familia incorrecta.
 Recomendaciones: titulo mal redactado, specs incompletas.
 
 Responde SOLO JSON valido:
-{"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion"}`;
+{"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
 // Prompt de verificación visual: sólo se usa cuando la primera revisión dio ERROR.
 // Sesgo conservador → prefiere COHERENTE ante duda razonable.
@@ -149,17 +153,21 @@ function safeParseJson(text) {
 function normalize(raw) {
   if (!raw || typeof raw !== 'object') return {
     estado_visual:'SIN_IMAGEN', analisis_visual:'Sin imagen.', estado_tecnico:'ERROR',
-    validaciones:'', discrepancias:'', recomendaciones:'', propuesta_correccion:''
+    validaciones:'', discrepancias:'', recomendaciones:'', propuesta_correccion:'',
+    estado_descripcion:'SIN_DESCRIPCION', analisis_descripcion:''
   };
   const v = String(raw.estado_visual||'').toUpperCase();
+  const d = String(raw.estado_descripcion||'').toUpperCase();
   return {
-    estado_visual: v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR': v==='ERROR_DESCARGA'?'ERROR_DESCARGA':'SIN_IMAGEN',
+    estado_visual:        v==='COHERENTE'?'COHERENTE': v==='ERROR'?'ERROR': v==='ERROR_DESCARGA'?'ERROR_DESCARGA':'SIN_IMAGEN',
     analisis_visual:      String(raw.analisis_visual      ||'').trim(),
     estado_tecnico:       String(raw.estado_tecnico       ||'').toUpperCase()==='OK'?'OK':'ERROR',
     validaciones:         String(raw.validaciones         ||'').trim(),
     discrepancias:        String(raw.discrepancias        ||'').trim(),
     recomendaciones:      String(raw.recomendaciones      ||'').trim(),
-    propuesta_correccion: String(raw.propuesta_correccion ||'').trim()
+    propuesta_correccion: String(raw.propuesta_correccion ||'').trim(),
+    estado_descripcion:   d==='COHERENTE'?'COHERENTE': d==='INCOHERENTE'?'INCOHERENTE':'SIN_DESCRIPCION',
+    analisis_descripcion: String(raw.analisis_descripcion ||'').trim()
   };
 }
 
@@ -229,7 +237,12 @@ export async function auditScrape(scrape, opts = {}) {
   delete specs.__sku_web__;
 
   const userText = 'Auditar producto famiq.com.ar:\n' +
-    JSON.stringify({ texto_comercial: opts.descripcionMaestra||'', titulo_web: scrape.titulo||'', specs }, null, 1) +
+    JSON.stringify({
+      texto_comercial:  opts.descripcionMaestra || '',
+      titulo_web:       scrape.titulo || '',
+      descripcion_web:  desc.slice(0, 350),
+      specs
+    }, null, 1) +
     '\nResponde SOLO el JSON indicado.';
 
   const imageUrl = scrape.imagen || null;

@@ -431,11 +431,13 @@ async function writeReport(filePath, results) {
     { header: 'Hash Maestro (Drive)',         key: 'hashMaestro',     width: 66 },
     { header: 'Estado Visual',               key: 'estadoVisual',    width: 18 },
     { header: 'Analisis Visual',             key: 'analisisVisual',  width: 55 },
-    { header: 'Estado Tecnico',              key: 'estadoTecnico',   width: 16 },
-    { header: 'Validaciones',                key: 'validaciones',    width: 65 },
-    { header: 'Discrepancias',               key: 'discrepancias',   width: 65 },
-    { header: 'Recomendaciones',             key: 'recomendaciones', width: 55 },
-    { header: 'Propuesta de Correccion',     key: 'propuesta',       width: 55 },
+    { header: 'Estado Tecnico',              key: 'estadoTecnico',       width: 16 },
+    { header: 'Validaciones',                key: 'validaciones',        width: 65 },
+    { header: 'Discrepancias',               key: 'discrepancias',       width: 65 },
+    { header: 'Recomendaciones',             key: 'recomendaciones',     width: 55 },
+    { header: 'Propuesta de Correccion',     key: 'propuesta',           width: 55 },
+    { header: 'Estado Descripcion',          key: 'estadoDescripcion',   width: 20 },
+    { header: 'Analisis Descripcion',        key: 'analisisDescripcion', width: 65 },
     { header: 'Link FT Drive (maestro)',     key: 'urlFtDrive',      width: 80 },
     { header: 'URL Imagen Auditada',         key: 'urlImagen',       width: 80 },
     { header: 'URL FT Web (PDF publicado)',  key: 'urlFtWeb',        width: 80 },
@@ -452,11 +454,12 @@ async function writeReport(filePath, results) {
 
   const colorFor = (val) => {
     if (!val) return null;
-    if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';
-    if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';
-    if (val === 'ERROR_DESCARGA')          return 'FFFFD966'; // amarillo — pendiente reintento
-    if (val === 'SIN_IMAGEN')              return 'FFDCE6F1';
-    return 'FFFFC7CE';
+    if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';   // verde
+    if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';   // amarillo
+    if (val === 'ERROR_DESCARGA')          return 'FFFFD966';   // amarillo — pendiente reintento
+    if (['SIN_IMAGEN', 'SIN_DESCRIPCION'].includes(val)) return 'FFDCE6F1'; // azul claro
+    if (val === 'INCOHERENTE')             return 'FFFFC7CE';   // rojo
+    return 'FFFFC7CE';                                          // rojo (ERROR, etc.)
   };
 
   results.forEach((r) => {
@@ -467,6 +470,7 @@ async function writeReport(filePath, results) {
       estadoTecnico: r.estadoTecnico, validaciones: r.validaciones,
       discrepancias: r.discrepancias, recomendaciones: r.recomendaciones,
       propuesta: r.propuesta,
+      estadoDescripcion: r.estadoDescripcion || '', analisisDescripcion: r.analisisDescripcion || '',
       urlFtDrive: r.urlFtDrive || '', urlImagen: r.urlImagen || '',
       urlFtWeb: r.urlFtWeb || '', versionPdf: r.versionPdf || '',
       detalleDiff: r.detalleDiff || '', descripcionWeb: r.descripcionWeb || ''
@@ -477,9 +481,10 @@ async function writeReport(filePath, results) {
       if (!argb) return;
       row.getCell(key).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
     };
-    paint('integridad',   colorFor(r.integridad));
-    paint('estadoVisual', colorFor(r.estadoVisual));
-    paint('estadoTecnico',colorFor(r.estadoTecnico));
+    paint('integridad',        colorFor(r.integridad));
+    paint('estadoVisual',      colorFor(r.estadoVisual));
+    paint('estadoTecnico',     colorFor(r.estadoTecnico));
+    paint('estadoDescripcion', colorFor(r.estadoDescripcion));
 
     const linkCell = (key, url) => {
       if (!url) return;
@@ -508,7 +513,8 @@ async function processRow(row, browser) {
     estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
     recomendaciones: '', propuesta: '',
     urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
-    detalleDiff: '', descripcionWeb: ''
+    detalleDiff: '', descripcionWeb: '',
+    estadoDescripcion: 'SIN_DESCRIPCION', analisisDescripcion: ''
   };
 
   // 1) Integridad PDF (con cache — si el mismo PDF aparece en varias filas, se descarga una sola vez)
@@ -545,11 +551,13 @@ async function processRow(row, browser) {
 
   // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
-  base.estadoVisual    = audit.estado_visual;
-  base.analisisVisual  = audit.analisis_visual;
-  base.estadoTecnico   = audit.estado_tecnico;
-  base.validaciones    = audit.validaciones    || '';
-  base.recomendaciones = audit.recomendaciones || '';
+  base.estadoVisual        = audit.estado_visual;
+  base.analisisVisual      = audit.analisis_visual;
+  base.estadoTecnico       = audit.estado_tecnico;
+  base.validaciones        = audit.validaciones        || '';
+  base.recomendaciones     = audit.recomendaciones     || '';
+  base.estadoDescripcion   = audit.estado_descripcion  || 'SIN_DESCRIPCION';
+  base.analisisDescripcion = audit.analisis_descripcion || '';
 
   const agentDisc = audit.discrepancias || '';
   if (base.discrepancias && agentDisc && agentDisc !== 'Sin discrepancias') {
@@ -601,7 +609,8 @@ async function main() {
           estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
           recomendaciones: '', propuesta: '',
           urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
-          detalleDiff: '', descripcionWeb: ''
+          detalleDiff: '', descripcionWeb: '',
+          estadoDescripcion: 'SIN_DESCRIPCION', analisisDescripcion: ''
         };
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);

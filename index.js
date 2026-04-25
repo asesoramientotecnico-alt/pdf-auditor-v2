@@ -98,7 +98,9 @@ async function downloadDriveBuffer(fileId) {
     { fileId, alt: 'media', supportsAllDrives: true, includeItemsFromAllDrives: true },
     { responseType: 'arraybuffer' }
   );
-  return Buffer.from(res.data);
+  const buf = Buffer.from(res.data);
+  if (buf.length === 0) throw new Error(`Drive devolvió respuesta vacía (fileId=${fileId}) — verificar permisos`);
+  return buf;
 }
 
 async function downloadBufferWithCache(url, { timeout = 60000, retries = 3 } = {}) {
@@ -268,10 +270,13 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
     result.detalle    = result.integridad === 'OK'
       ? 'Hash SHA-256 coincide.'
       : 'El PDF publicado NO coincide con el maestro de Drive.';
+    console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}…`);
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
-    console.warn(`[pdf] ERROR integridad: ${result.detalle} | urlWeb=${urlWeb.slice(0,80)} | urlDrive=${urlDrive.slice(0,80)}`);
+    console.warn(`[pdf] ERROR integridad: ${result.detalle}`);
+    console.warn(`[pdf]   urlWeb=${urlWeb.slice(0,80)}`);
+    console.warn(`[pdf]   urlDrive=${urlDrive.slice(0,80)}`);
   }
   return result;
 }

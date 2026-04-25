@@ -13,6 +13,7 @@ import { google } from 'googleapis';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { launchBrowser, scrapeProduct } from './scraper.js';
 import { auditScrape } from './agent.js';
+import { batchAudit } from './agent-batch.js';
 import { notify } from './notifier.js';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -23,6 +24,7 @@ const OUTPUT_XLSX     = process.env.OUTPUT_XLSX     || 'Reporte_Auditoria_IA.xls
 const CHECKPOINT_FILE = process.env.CHECKPOINT_FILE || 'checkpoint.json';
 const CONCURRENCY     = parseInt(process.env.CONCURRENCY || '8', 10);
 const RECIPIENT       = process.env.REPORT_RECIPIENT || 'jortiz@famiq.com.ar';
+const AUDIT_MODE      = (process.env.AUDIT_MODE || 'sync').toLowerCase();  // 'sync' | 'batch'
 
 const SHEETS_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets.readonly',
@@ -511,7 +513,9 @@ async function writeReport(filePath, results) {
 
 // -------------------- pipeline por fila --------------------
 
-async function processRow(row, browser) {
+// Construye el objeto base (campos no-Claude) y devuelve también el scrape para auditar.
+// Compartido entre modo sync (1 fila a la vez) y modo batch (todas a la vez).
+async function gatherRowData(row, browser) {
   const base = {
     sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
     integridad: 'ERROR', hashWeb: '', hashMaestro: '',
@@ -546,24 +550,23 @@ async function processRow(row, browser) {
     ? await scrapeProduct(row.urlProducto, browser, row.urlImagen)
     : { error: 'Fila sin URL de producto.' };
 
-  // Si falló pero tenemos imagen en col M, preservarla para el agent
-  if (scrape.error && row.urlImagen) {
-    scrape.imagen = row.urlImagen;
-  }
-  base.urlImagen = scrape.imagen || row.urlImagen || '';
-
-  // Capturar descripción antes de que auditScrape la elimine de su copia local
+  if (scrape.error && row.urlImagen) scrape.imagen = row.urlImagen;
+  base.urlImagen      = scrape.imagen || row.urlImagen || '';
   base.descripcionWeb = scrape.especificaciones?.['__descripcion_larga__']?.slice(0, 600) || '';
 
-  // 3) Auditoria IA: compara texto comercial (col 12) vs specs web + valida imagen
-  const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
+  return { base, scrape };
+}
+
+// Aplica el resultado del agent (sync o batch) sobre el objeto base existente
+function applyAudit(base, audit) {
   base.estadoVisual        = audit.estado_visual;
   base.analisisVisual      = audit.analisis_visual;
   base.estadoTecnico       = audit.estado_tecnico;
-  base.validaciones        = audit.validaciones        || '';
-  base.recomendaciones     = audit.recomendaciones     || '';
-  base.estadoDescripcion   = audit.estado_descripcion  || 'SIN_DESCRIPCION';
+  base.validaciones        = audit.validaciones         || '';
+  base.recomendaciones     = audit.recomendaciones      || '';
+  base.estadoDescripcion   = audit.estado_descripcion   || 'SIN_DESCRIPCION';
   base.analisisDescripcion = audit.analisis_descripcion || '';
+  base.propuesta           = audit.propuesta_correccion || '';
 
   const agentDisc = audit.discrepancias || '';
   if (base.discrepancias && agentDisc && agentDisc !== 'Sin discrepancias') {
@@ -571,26 +574,36 @@ async function processRow(row, browser) {
   } else if (agentDisc && agentDisc !== 'Sin discrepancias') {
     base.discrepancias = agentDisc;
   }
-  base.propuesta = audit.propuesta_correccion || '';
   return base;
+}
+
+async function processRow(row, browser) {
+  const { base, scrape } = await gatherRowData(row, browser);
+  const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
+  return applyAudit(base, audit);
 }
 
 // -------------------- main --------------------
 
-async function main() {
-  console.log('=== Agente Auditor de Calidad Web ===');
-  console.log(`Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
-  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
-  loadPdfHashCache();
+// Resultado base default cuando algo falla y no podemos auditar
+function buildErrorBase(row, errMsg) {
+  return {
+    sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
+    integridad: 'ERROR', hashWeb: '', hashMaestro: '',
+    estadoVisual: 'ERROR', analisisVisual: `Fallo: ${errMsg}`,
+    estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
+    recomendaciones: '', propuesta: '',
+    urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
+    detalleDiff: '', descripcionWeb: '',
+    estadoDescripcion: 'SIN_DESCRIPCION', analisisDescripcion: ''
+  };
+}
 
-  if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY no seteada.');
-
-  const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
-  console.log(`Filas a auditar: ${rows.length}`);
-
+// ── Modo SYNC (1 llamada a Claude por SKU, throttle 13s) ──────────────────────
+async function mainSync(rows, browser) {
+  console.log(`[main] modo SYNC — ${rows.length} filas, concurrencia ${CONCURRENCY}`);
   const checkpoint = loadCheckpoint();
   const results    = checkpoint.results || {};
-  const browser    = await launchBrowser();
   const limit      = pLimit(CONCURRENCY);
   let done = 0;
 
@@ -608,16 +621,7 @@ async function main() {
         done++;
         console.log(`[ok ${done}/${rows.length}] ${row.sku} pdf=${res.integridad} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
       } catch (err) {
-        results[key] = {
-          sku: row.sku, textoComercial: row.textoComercial, urlProducto: row.urlProducto,
-          integridad: 'ERROR', hashWeb: '', hashMaestro: '',
-          estadoVisual: 'ERROR', analisisVisual: `Fallo: ${err?.message || err}`,
-          estadoTecnico: 'ERROR', validaciones: '', discrepancias: '',
-          recomendaciones: '', propuesta: '',
-          urlImagen: row.urlImagen || '', urlFtWeb: '', versionPdf: '',
-          detalleDiff: '', descripcionWeb: '',
-          estadoDescripcion: 'SIN_DESCRIPCION', analisisDescripcion: ''
-        };
+        results[key] = buildErrorBase(row, err?.message || err);
         done++;
         console.error(`[err ${done}/${rows.length}] ${row.sku}: ${err?.message || err}`);
       } finally {
@@ -625,7 +629,6 @@ async function main() {
       }
     })
   );
-
   await Promise.all(tasks);
 
   // ---- Reintentos para filas con error de descarga de imagen ----
@@ -638,7 +641,6 @@ async function main() {
       if (!row) continue;
       try {
         console.log(`[retry] ${row.sku}...`);
-        // Borrar del checkpoint para forzar reproceso
         delete results[key];
         const res = await processRow(row, browser);
         results[key] = res;
@@ -652,7 +654,68 @@ async function main() {
     }
   }
 
-  const ordered = rows.map((r) => results[String(r.rowNumber)]).filter(Boolean);
+  return rows.map((r) => results[String(r.rowNumber)]).filter(Boolean);
+}
+
+// ── Modo BATCH (Anthropic Batch API: 50% más barato, espera 1-3 h) ──────────
+async function mainBatch(rows, browser) {
+  console.log(`[main] modo BATCH — ${rows.length} filas`);
+  const limit = pLimit(CONCURRENCY);
+  const baseByKey = {};               // key → objeto base (con PDF + scrape data)
+  const items    = new Map();         // customId → { scrape, opts } para el agent batch
+
+  // ── Fase 1: scrape + integridad PDF en paralelo (sin Claude todavía) ──
+  console.log('[batch] fase 1: scrape + PDF integrity en paralelo...');
+  let gathered = 0;
+  await Promise.all(rows.map(row => limit(async () => {
+    const key = String(row.rowNumber);
+    try {
+      const { base, scrape } = await gatherRowData(row, browser);
+      baseByKey[key] = base;
+      // Solo enviamos al batch las filas que tienen URL de producto o imagen
+      if (row.urlProducto || base.urlImagen) {
+        items.set(key, { scrape, opts: { descripcionMaestra: row.textoComercial } });
+      }
+      gathered++;
+      console.log(`[gather ${gathered}/${rows.length}] ${row.sku} pdf=${base.integridad} img=${base.urlImagen?'✓':'✗'}`);
+    } catch (err) {
+      baseByKey[key] = buildErrorBase(row, err?.message || err);
+      gathered++;
+      console.error(`[gather err ${gathered}/${rows.length}] ${row.sku}: ${err?.message || err}`);
+    }
+  })));
+
+  console.log(`[batch] fase 1 completa: ${Object.keys(baseByKey).length} filas, ${items.size} a auditar`);
+
+  // ── Fase 2: ejecutar batch (submit + poll + retrieve + verify 2-pass) ──
+  if (items.size > 0) {
+    console.log(`[batch] fase 2: enviando ${items.size} requests a Claude Batch API...`);
+    const audits = await batchAudit(items);
+    for (const [key, audit] of audits) {
+      if (baseByKey[key]) applyAudit(baseByKey[key], audit);
+    }
+    console.log(`[batch] fase 2 completa: ${audits.size} auditorías aplicadas`);
+  }
+
+  return rows.map((r) => baseByKey[String(r.rowNumber)]).filter(Boolean);
+}
+
+async function main() {
+  console.log('=== Agente Auditor de Calidad Web ===');
+  console.log(`Modo: ${AUDIT_MODE.toUpperCase()} | Sheet: ${SPREADSHEET_ID} | Hoja: ${INPUT_SHEET}`);
+  console.log(`Salida: ${OUTPUT_XLSX} | Concurrencia: ${CONCURRENCY}`);
+  loadPdfHashCache();
+
+  if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY no seteada.');
+
+  const rows = await readSheetRows(SPREADSHEET_ID, INPUT_SHEET);
+  console.log(`Filas a auditar: ${rows.length}`);
+
+  const browser = await launchBrowser();
+  const ordered = AUDIT_MODE === 'batch'
+    ? await mainBatch(rows, browser)
+    : await mainSync(rows, browser);
+
   const outPath = path.resolve(process.cwd(), OUTPUT_XLSX);
   await writeReport(outPath, ordered);
   console.log(`Reporte generado: ${outPath}`);

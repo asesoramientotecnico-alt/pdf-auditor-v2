@@ -233,6 +233,7 @@ export async function auditScrape(scrape, opts = {}) {
   );
 
   const specs = { ...(scrape.especificaciones||{}) };
+  const desc  = specs.__descripcion_larga__ || '';
   delete specs.__descripcion_larga__;
   delete specs.__sku_web__;
 

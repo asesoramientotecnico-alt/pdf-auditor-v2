@@ -10,6 +10,10 @@ on:
           - sync
           - batch
         default: sync
+      debug_sku:
+        description: 'SKU a auditar (dejar vacío para auditar todos)'
+        type: string
+        default: ''
 
 permissions:
   id-token: write
@@ -26,6 +30,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUDIT_MODE: ${{ inputs.mode }}
+      DEBUG_SKU: ${{ inputs.debug_sku }}
       CONCURRENCY: '8'
       REPORT_RECIPIENT: jortiz@famiq.com.ar
       INPUT_XLSX: prueba_robot_FT_2.xlsx

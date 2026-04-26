@@ -96,7 +96,7 @@ export async function fetchImageAsBase64(imageUrl) {
       const res = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         timeout: 40000,
-        maxContentLength: 3 * 1024 * 1024,
+        maxContentLength: 10 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
         httpsAgent: insecureAgent,
         headers: {
@@ -106,7 +106,6 @@ export async function fetchImageAsBase64(imageUrl) {
         }
       });
       const rawBuf = Buffer.from(res.data);
-      if (rawBuf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${rawBuf.length}`); return null; }
       let mime = (res.headers['content-type'] || '').split(';')[0].trim();
       if (!mime.startsWith('image/')) mime = 'image/jpeg';
       const resized = await resizeImage(rawBuf);

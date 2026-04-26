@@ -76,8 +76,16 @@ function col(row, oneBasedIndex) {
   return v == null ? '' : String(v).trim();
 }
 
+// Detecta marcadores de "no aplica" en la planilla (N/D, NA, vacío, etc.)
+function isMissingMarker(s) {
+  if (!s) return true;
+  const t = String(s).trim().toUpperCase();
+  if (!t) return true;
+  return ['N/D', 'ND', 'N/A', 'NA', '-', '--', 'NULL', 'NONE', 'SIN', 'SIN LINK', 'SIN URL'].includes(t);
+}
+
 export function normalizeDriveUrl(url) {
-  if (!url) return '';
+  if (isMissingMarker(url)) return '';
   const s = String(url).trim();
   if (!s) return '';
   const m = s.match(/\/file\/d\/([^/]+)/) || s.match(/[?&]id=([^&]+)/);
@@ -305,23 +313,29 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', detalleDiff: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
 
   let urlWeb = '';
-  if (urlFtBase) {
-    const isCompleteUrl = /\.\w{2,5}$/i.test(urlFtBase.split('?')[0].split('#')[0]);
-    if (isCompleteUrl || !nombreArchivo) {
-      urlWeb = urlFtBase;
+  const baseClean = isMissingMarker(urlFtBase) ? '' : String(urlFtBase).trim();
+  const nombreClean = isMissingMarker(nombreArchivo) ? '' : String(nombreArchivo).trim();
+  if (baseClean) {
+    const isCompleteUrl = /\.\w{2,5}$/i.test(baseClean.split('?')[0].split('#')[0]);
+    if (isCompleteUrl || !nombreClean) {
+      urlWeb = baseClean;
     } else {
-      const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
-      urlWeb = base + nombreArchivo;
+      const base = baseClean.endsWith('/') ? baseClean : baseClean + '/';
+      urlWeb = base + nombreClean;
     }
   }
 
-  result.urlFtDrive = urlDriveRaw || '';
+  // Si urlWeb termina en "/" (sin archivo) → no es un PDF descargable
+  if (urlWeb.endsWith('/')) urlWeb = '';
+
+  const driveMissing = isMissingMarker(urlDriveRaw);
+  result.urlFtDrive = driveMissing ? '' : String(urlDriveRaw).trim();
   result.urlFtWeb   = urlWeb;
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
-    urlWeb   ? getHashForUrl(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
-    urlDrive ? getHashForUrl(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
+    urlWeb   ? getHashForUrl(urlWeb)   : Promise.reject(new Error('Sin URL FT web en planilla')),
+    urlDrive ? getHashForUrl(urlDrive) : Promise.reject(new Error(driveMissing ? 'Sin Link FT Drive en planilla' : 'Link FT Drive vacío'))
   ]);
 
   const errs = [];
@@ -340,12 +354,17 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   if (result.hashWeb && result.hashMaestro) {
     result.integridad = result.hashWeb === result.hashMaestro ? 'OK' : 'DESACTUALIZADO';
     if (result.integridad === 'OK') {
-      result.detalle    = 'Hash SHA-256 coincide.';
+      result.detalle = 'Hash SHA-256 coincide.';
     } else {
       result.detalle    = 'El PDF publicado NO coincide con el maestro de Drive.';
       result.detalleDiff = describePdfDiff(webRes.value, driveRes.value);
     }
     console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}… diff="${result.detalleDiff||'-'}"`);
+  } else if (result.hashWeb && driveMissing) {
+    // Web OK pero la planilla no tiene Link de Drive → no se puede comparar contra maestro
+    result.integridad = 'SIN_MAESTRO';
+    result.detalle    = 'PDF web descargado correctamente. Sin Link FT Drive en planilla — no se puede comparar contra maestro.';
+    console.log(`[pdf] SIN_MAESTRO web=${result.hashWeb.slice(0,8)}… (planilla sin link Drive)`);
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
@@ -465,7 +484,7 @@ async function writeReport(filePath, results) {
     if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';   // verde
     if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';   // amarillo
     if (val === 'ERROR_DESCARGA')          return 'FFFFD966';   // amarillo — pendiente reintento
-    if (['SIN_IMAGEN', 'SIN_DESCRIPCION'].includes(val)) return 'FFDCE6F1'; // azul claro
+    if (['SIN_IMAGEN', 'SIN_DESCRIPCION', 'SIN_MAESTRO'].includes(val)) return 'FFDCE6F1'; // azul claro
     if (val === 'INCOHERENTE')             return 'FFFFC7CE';   // rojo
     return 'FFFFC7CE';                                          // rojo (ERROR, etc.)
   };
@@ -533,11 +552,12 @@ async function gatherRowData(row, browser) {
     base.integridad  = pdf.integridad;
     base.hashWeb     = pdf.hashWeb;
     base.hashMaestro = pdf.hashMaestro;
-    base.urlFtDrive  = pdf.urlFtDrive || row.linkFtDrive || '';
+    base.urlFtDrive  = pdf.urlFtDrive || (isMissingMarker(row.linkFtDrive) ? '' : row.linkFtDrive) || '';
     base.urlFtWeb    = pdf.urlFtWeb   || '';
     base.versionPdf  = pdf.versionPdf  || '';
     base.detalleDiff = pdf.detalleDiff || '';
-    if (pdf.detalle && pdf.integridad !== 'OK') {
+    // Solo agregar [PDF] a discrepancias cuando hay error real (no para SIN_MAESTRO ni OK)
+    if (pdf.detalle && pdf.integridad !== 'OK' && pdf.integridad !== 'SIN_MAESTRO') {
       base.discrepancias = `[PDF] ${pdf.detalle}`;
     }
   } catch (err) {

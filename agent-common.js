@@ -31,8 +31,17 @@ B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
 D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
-Recomendaciones: titulo mal redactado, specs incompletas.
+REGLAS CRITICAS DE VALIDACION TECNICA:
+1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
+2. Si specs esta vacio o todos sus campos son "no especificado"/"NO_ESPECIFICADO"/vacios:
+   - estado_tecnico = "OK"
+   - validaciones = "No aparece en PIN"
+   - discrepancias = "Sin discrepancias"
+   - recomendaciones puede mencionar "El producto no tiene tabla tecnica publicada en PIN"
+3. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
+
+Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
+Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
 
 Responde SOLO JSON valido:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
@@ -50,8 +59,17 @@ B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
 D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, specs de otro SKU, descripcion de familia incorrecta.
-Recomendaciones: titulo mal redactado, specs incompletas.
+REGLAS CRITICAS DE VALIDACION TECNICA:
+1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
+2. Si specs esta vacio o todos sus campos son "no especificado"/"NO_ESPECIFICADO"/vacios:
+   - estado_tecnico = "OK"
+   - validaciones = "No aparece en PIN"
+   - discrepancias = "Sin discrepancias"
+   - recomendaciones puede mencionar "El producto no tiene tabla tecnica publicada en PIN"
+3. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
+
+Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), specs de otro SKU, descripcion de familia incorrecta.
+Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
 
 Responde SOLO JSON valido:
 {"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;

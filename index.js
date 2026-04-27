@@ -571,6 +571,8 @@ async function gatherRowData(row, browser) {
     : { error: 'Fila sin URL de producto.' };
 
   if (scrape.error && row.urlImagen) scrape.imagen = row.urlImagen;
+  // Fallback: scraper sin imagen pero Col M tiene URL → garantizar que el batch la reciba
+  if (!scrape.imagen && row.urlImagen) scrape.imagen = row.urlImagen;
   base.urlImagen      = scrape.imagen || row.urlImagen || '';
   base.descripcionWeb = scrape.especificaciones?.['__descripcion_larga__']?.slice(0, 600) || '';
 

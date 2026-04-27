@@ -17,10 +17,9 @@ import {
 
 const BATCH_URL = 'https://api.anthropic.com/v1/messages/batches';
 
-// 256 MB es el límite documentado; dejamos 200 MB de margen.
-const MAX_BATCH_BYTES = 200 * 1024 * 1024;
-// 100k requests por batch (límite Anthropic). Para Famiq queda holgado.
-const MAX_BATCH_REQUESTS = 90_000;
+// Chunks chicos: respuestas legibles ante errores y evita timeouts en upload.
+const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+const MAX_BATCH_REQUESTS = 100;
 
 const POLL_INTERVAL_MS = 60_000;          // chequear cada 60s
 const MAX_POLL_DURATION_MS = 6 * 3_600_000; // 6 horas (matchea timeout del workflow)

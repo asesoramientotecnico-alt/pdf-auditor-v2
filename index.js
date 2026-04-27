@@ -750,6 +750,33 @@ async function mainBatch(rows, browser) {
     console.log(`[batch] fase 2 completa: ${audits.size} auditorías aplicadas`);
   }
 
+  // ── Fase 3: retry para ERROR_DESCARGA / SIN_IMAGEN con imagen / JSON no parseable ──
+  const retryKeys = Object.keys(baseByKey).filter(k => {
+    const r = baseByKey[k];
+    if (!r) return false;
+    if (r.estadoVisual === 'ERROR_DESCARGA') return true;
+    if (r.estadoVisual === 'SIN_IMAGEN' && r.urlImagen && r.analisisVisual !== 'Página en blanco') return true;
+    const errText = `${r.analisisVisual || ''} ${r.discrepancias || ''}`;
+    if (errText.includes('JSON no parseable')) return true;
+    return false;
+  });
+  if (retryKeys.length > 0) {
+    console.log(`\n[batch] fase 3: ${retryKeys.length} filas con error recuperable — reintentando en 30s...`);
+    await new Promise(r => setTimeout(r, 30000));
+    for (const key of retryKeys) {
+      const row = rows.find(r => String(r.rowNumber) === key);
+      if (!row) continue;
+      try {
+        console.log(`[batch retry] ${row.sku}...`);
+        const res = await processRow(row, null);
+        baseByKey[key] = res;
+        console.log(`[batch retry ok] ${row.sku} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
+      } catch (err) {
+        console.error(`[batch retry err] ${row.sku}: ${err?.message || err}`);
+      }
+    }
+  }
+
   return rows.map((r) => baseByKey[String(r.rowNumber)]).filter(Boolean);
 }
 

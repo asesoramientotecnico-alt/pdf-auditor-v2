@@ -8,7 +8,7 @@ export const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 export const ANTHROPIC_VERSION = '2023-06-01';
 export const ANTHROPIC_BETA    = 'prompt-caching-2024-07-31,message-batches-2024-09-24';
 export const MODEL             = 'claude-haiku-4-5-20251001';
-export const MAX_TOKENS        = 700;
+export const MAX_TOKENS        = 1200;
 
 // ── Prompts ──────────────────────────────────────────────────────────────────
 

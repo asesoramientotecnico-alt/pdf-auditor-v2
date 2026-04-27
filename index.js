@@ -574,6 +574,12 @@ async function gatherRowData(row, browser) {
   base.urlImagen      = scrape.imagen || row.urlImagen || '';
   base.descripcionWeb = scrape.especificaciones?.['__descripcion_larga__']?.slice(0, 600) || '';
 
+  // Detectar producto que no aparece en PIN: API respondió pero sin título ni specs públicas
+  const publicSpecCount = Object.keys(scrape.especificaciones || {}).filter(k => !k.startsWith('__')).length;
+  if (!scrape.error && !scrape.titulo && publicSpecCount === 0) {
+    scrape._noEnPIN = true;
+  }
+
   return { base, scrape };
 }
 
@@ -599,11 +605,23 @@ function applyAudit(base, audit) {
 
 async function processRow(row, browser) {
   const { base, scrape } = await gatherRowData(row, browser);
+  if (scrape._noEnPIN) {
+    console.log(`[row] ${row.sku} → No aparece en PIN`);
+    return applyAudit(base, NO_EN_PIN_AUDIT);
+  }
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
   return applyAudit(base, audit);
 }
 
 // -------------------- main --------------------
+
+const NO_EN_PIN_AUDIT = {
+  estado_visual: 'SIN_IMAGEN', analisis_visual: 'No aparece en PIN',
+  estado_tecnico: 'OK', validaciones: 'No aparece en PIN',
+  discrepancias: 'Sin discrepancias', recomendaciones: 'Sin recomendaciones',
+  propuesta_correccion: 'No requiere correccion',
+  estado_descripcion: 'SIN_DESCRIPCION', analisis_descripcion: 'No aparece en PIN'
+};
 
 // Resultado base default cuando algo falla y no podemos auditar
 function buildErrorBase(row, errMsg) {
@@ -692,8 +710,11 @@ async function mainBatch(rows, browser) {
     try {
       const { base, scrape } = await gatherRowData(row, browser);
       baseByKey[key] = base;
-      // Solo enviamos al batch las filas que tienen URL de producto o imagen
-      if (row.urlProducto || base.urlImagen) {
+      if (scrape._noEnPIN) {
+        // Producto sin datos en PIN: no enviar a Claude, resultado directo
+        applyAudit(base, NO_EN_PIN_AUDIT);
+        console.log(`[gather ${gathered}/${rows.length}] ${row.sku} → No aparece en PIN`);
+      } else if (row.urlProducto || base.urlImagen) {
         items.set(key, { scrape, opts: { descripcionMaestra: row.textoComercial } });
       }
       gathered++;

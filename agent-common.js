@@ -33,12 +33,7 @@ D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en text
 
 REGLAS CRITICAS DE VALIDACION TECNICA:
 1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
-2. Si specs esta vacio o todos sus campos son "no especificado"/"NO_ESPECIFICADO"/vacios:
-   - estado_tecnico = "OK"
-   - validaciones = "No aparece en PIN"
-   - discrepancias = "Sin discrepancias"
-   - recomendaciones puede mencionar "El producto no tiene tabla tecnica publicada en PIN"
-3. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
+2. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
 
 Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
 Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
@@ -61,12 +56,7 @@ D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en text
 
 REGLAS CRITICAS DE VALIDACION TECNICA:
 1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
-2. Si specs esta vacio o todos sus campos son "no especificado"/"NO_ESPECIFICADO"/vacios:
-   - estado_tecnico = "OK"
-   - validaciones = "No aparece en PIN"
-   - discrepancias = "Sin discrepancias"
-   - recomendaciones puede mencionar "El producto no tiene tabla tecnica publicada en PIN"
-3. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
+2. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
 
 Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), specs de otro SKU, descripcion de familia incorrecta.
 Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.

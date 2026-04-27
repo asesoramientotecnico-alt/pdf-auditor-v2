@@ -161,7 +161,7 @@ export async function auditScrape(scrape, opts = {}) {
     }
   }
 
-  if (imageUrl && result.estado_visual !== 'ERROR_DESCARGA') {
+  if (imageUrl && result.estado_visual !== 'ERROR_DESCARGA' && result.estado_visual !== 'SIN_IMAGEN') {
     visualCache.set(imageUrl, { estado_visual: result.estado_visual, analisis_visual: result.analisis_visual });
     console.log(`[agent] visual cacheada: ${result.estado_visual} → ${imageUrl.slice(-55)}`);
   }

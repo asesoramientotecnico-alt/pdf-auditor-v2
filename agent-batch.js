@@ -28,7 +28,8 @@ function authHeaders(apiKey) {
   return {
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
-    'anthropic-version': ANTHROPIC_VERSION
+    'anthropic-version': ANTHROPIC_VERSION,
+    'anthropic-beta': 'message-batches-2024-09-24'
   };
 }
 

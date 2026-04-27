@@ -94,11 +94,21 @@ export async function scrapeProduct(url, _ignoredBrowser = null, urlImagenDirect
   const sku = productoData.codigo || productoData.sku || '';
   if (sku) especificaciones['__sku_web__'] = String(sku);
 
-  // Imagen: Col M es la fuente de verdad (URL suministrada manualmente)
+  // Imagen: Col M primero (fuente de verdad); si está vacía, intentar desde la API JSON
   let imagen = null;
   if (urlImagenDirecta && String(urlImagenDirecta).trim()) {
     imagen = String(urlImagenDirecta).trim();
-    console.log(`[scraper] ✓ Col M`);
+    console.log(`[scraper] ✓ imagen Col M`);
+  } else {
+    const apiImg = productoData.imagen || productoData.imagen_url ||
+                   productoData.foto   || productoData.foto_url   ||
+                   productoData.images?.[0]?.url || productoData.images?.[0]?.src ||
+                   productoData.imagenes?.[0]?.url || productoData.imagenes?.[0]?.src ||
+                   productoData.imagenes?.[0];
+    if (apiImg && typeof apiImg === 'string' && apiImg.trim()) {
+      imagen = apiImg.trim();
+      console.log(`[scraper] ✓ imagen API: ${imagen.slice(0, 70)}`);
+    }
   }
 
   console.log(`[scraper] ${url} titulo="${titulo.slice(0, 40)}" specs=${Object.keys(especificaciones).filter(k => !k.startsWith('__')).length} imagen=${imagen ? '✓' : '✗'}`);

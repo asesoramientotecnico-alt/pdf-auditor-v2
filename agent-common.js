@@ -8,7 +8,7 @@ export const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 export const ANTHROPIC_VERSION = '2023-06-01';
 export const ANTHROPIC_BETA    = 'prompt-caching-2024-07-31,message-batches-2024-09-24';
 export const MODEL             = 'claude-haiku-4-5-20251001';
-export const MAX_TOKENS        = 700;
+export const MAX_TOKENS        = 1500;
 
 // ── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -31,10 +31,14 @@ B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
 D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
-Recomendaciones: titulo mal redactado, specs incompletas.
+REGLAS CRITICAS DE VALIDACION TECNICA:
+1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
+2. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
 
-Responde SOLO JSON valido:
+Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
+Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
+
+Responde SOLO JSON valido. No uses bloques de codigo. Empieza directamente con { y termina con }:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
 export const SYSTEM_PROMPT_TECHNICAL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
@@ -50,10 +54,14 @@ B) TECNICO texto_comercial vs specs: material (304/304L/316/316L), diametro (mm/
 C) TEXTO WEB vs specs: titulo_web coincide con specs?
 D) DESCRIPCION: descripcion_web es coherente con la FAMILIA del producto en texto_comercial? No se exige detalle tecnico — solo que hable del tipo correcto (valvula, tuerca, codo, bomba, etc.). Si descripcion_web esta vacia o ausente: SIN_DESCRIPCION.
 
-Errores criticos: material wrong, diametro wrong, norma wrong, specs de otro SKU, descripcion de familia incorrecta.
-Recomendaciones: titulo mal redactado, specs incompletas.
+REGLAS CRITICAS DE VALIDACION TECNICA:
+1. SOLO compara campos que existan en AMBOS lados (texto_comercial Y specs). Si un campo aparece en solo uno, OMITILO completamente — no lo incluyas en validaciones ni lo marques ERR.
+2. estado_tecnico = "ERROR" SOLO si hay contradiccion REAL entre valores presentes en ambos lados (ej: material 304L vs 316L). Specs incompletas NO son error tecnico — van en recomendaciones.
 
-Responde SOLO JSON valido:
+Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), specs de otro SKU, descripcion de familia incorrecta.
+Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
+
+Responde SOLO JSON valido. No uses bloques de codigo. Empieza directamente con { y termina con }:
 {"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
 export const SYSTEM_PROMPT_VERIFY = `Inspector visual senior de Famiq. Una primera revisión IA sugirió que la imagen NO corresponde al producto declarado. Tu tarea es verificar críticamente ese diagnóstico antes de confirmarlo como ERROR.
@@ -96,7 +104,7 @@ export async function fetchImageAsBase64(imageUrl) {
       const res = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         timeout: 40000,
-        maxContentLength: 3 * 1024 * 1024,
+        maxContentLength: 10 * 1024 * 1024,
         validateStatus: (s) => s >= 200 && s < 400,
         httpsAgent: insecureAgent,
         headers: {
@@ -106,7 +114,16 @@ export async function fetchImageAsBase64(imageUrl) {
         }
       });
       const rawBuf = Buffer.from(res.data);
-      if (rawBuf.length > 2.5 * 1024 * 1024) { console.warn(`[agent] imagen muy grande: ${rawBuf.length}`); return null; }
+      // Validar magic bytes — rechazar si no es imagen (ej: página HTML de error con HTTP 200)
+      const sig = rawBuf.slice(0, 4);
+      const isJpeg = sig[0] === 0xFF && sig[1] === 0xD8;
+      const isPng  = sig[0] === 0x89 && sig[1] === 0x50;
+      const isGif  = sig[0] === 0x47 && sig[1] === 0x49;
+      const isWebp = sig[0] === 0x52 && sig[1] === 0x49;
+      if (!isJpeg && !isPng && !isGif && !isWebp) {
+        const preview = rawBuf.slice(0, 60).toString('ascii').replace(/[^\x20-\x7E]/g, '?');
+        throw new Error(`Respuesta no es imagen (magic: ${sig.toString('hex')}). Preview: ${preview}`);
+      }
       let mime = (res.headers['content-type'] || '').split(';')[0].trim();
       if (!mime.startsWith('image/')) mime = 'image/jpeg';
       const resized = await resizeImage(rawBuf);

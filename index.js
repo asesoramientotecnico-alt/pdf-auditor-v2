@@ -76,8 +76,16 @@ function col(row, oneBasedIndex) {
   return v == null ? '' : String(v).trim();
 }
 
+// Detecta marcadores de "no aplica" en la planilla (N/D, NA, vacío, etc.)
+function isMissingMarker(s) {
+  if (!s) return true;
+  const t = String(s).trim().toUpperCase();
+  if (!t) return true;
+  return ['N/D', 'ND', 'N/A', 'NA', '-', '--', 'NULL', 'NONE', 'SIN', 'SIN LINK', 'SIN URL'].includes(t);
+}
+
 export function normalizeDriveUrl(url) {
-  if (!url) return '';
+  if (isMissingMarker(url)) return '';
   const s = String(url).trim();
   if (!s) return '';
   const m = s.match(/\/file\/d\/([^/]+)/) || s.match(/[?&]id=([^&]+)/);
@@ -305,23 +313,29 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   const result = { integridad: 'ERROR', hashWeb: '', hashMaestro: '', detalle: '', detalleDiff: '', urlFtDrive: '', urlFtWeb: '', versionPdf: '' };
 
   let urlWeb = '';
-  if (urlFtBase) {
-    const isCompleteUrl = /\.\w{2,5}$/i.test(urlFtBase.split('?')[0].split('#')[0]);
-    if (isCompleteUrl || !nombreArchivo) {
-      urlWeb = urlFtBase;
+  const baseClean = isMissingMarker(urlFtBase) ? '' : String(urlFtBase).trim();
+  const nombreClean = isMissingMarker(nombreArchivo) ? '' : String(nombreArchivo).trim();
+  if (baseClean) {
+    const isCompleteUrl = /\.\w{2,5}$/i.test(baseClean.split('?')[0].split('#')[0]);
+    if (isCompleteUrl || !nombreClean) {
+      urlWeb = baseClean;
     } else {
-      const base = urlFtBase.endsWith('/') ? urlFtBase : urlFtBase + '/';
-      urlWeb = base + nombreArchivo;
+      const base = baseClean.endsWith('/') ? baseClean : baseClean + '/';
+      urlWeb = base + nombreClean;
     }
   }
 
-  result.urlFtDrive = urlDriveRaw || '';
+  // Si urlWeb termina en "/" (sin archivo) → no es un PDF descargable
+  if (urlWeb.endsWith('/')) urlWeb = '';
+
+  const driveMissing = isMissingMarker(urlDriveRaw);
+  result.urlFtDrive = driveMissing ? '' : String(urlDriveRaw).trim();
   result.urlFtWeb   = urlWeb;
   const urlDrive = normalizeDriveUrl(urlDriveRaw);
 
   const [webRes, driveRes] = await Promise.allSettled([
-    urlWeb   ? getHashForUrl(urlWeb)   : Promise.reject(new Error('Sin URL FT web')),
-    urlDrive ? getHashForUrl(urlDrive) : Promise.reject(new Error('Sin Link FT Drive'))
+    urlWeb   ? getHashForUrl(urlWeb)   : Promise.reject(new Error('Sin URL FT web en planilla')),
+    urlDrive ? getHashForUrl(urlDrive) : Promise.reject(new Error(driveMissing ? 'Sin Link FT Drive en planilla' : 'Link FT Drive vacío'))
   ]);
 
   const errs = [];
@@ -340,12 +354,17 @@ async function checkPdfIntegrity(urlFtBase, nombreArchivo, urlDriveRaw) {
   if (result.hashWeb && result.hashMaestro) {
     result.integridad = result.hashWeb === result.hashMaestro ? 'OK' : 'DESACTUALIZADO';
     if (result.integridad === 'OK') {
-      result.detalle    = 'Hash SHA-256 coincide.';
+      result.detalle = 'Hash SHA-256 coincide.';
     } else {
       result.detalle    = 'El PDF publicado NO coincide con el maestro de Drive.';
       result.detalleDiff = describePdfDiff(webRes.value, driveRes.value);
     }
     console.log(`[pdf] ${result.integridad} web=${result.hashWeb.slice(0,8)}… drive=${result.hashMaestro.slice(0,8)}… diff="${result.detalleDiff||'-'}"`);
+  } else if (result.hashWeb && driveMissing) {
+    // Web OK pero la planilla no tiene Link de Drive → no se puede comparar contra maestro
+    result.integridad = 'SIN_MAESTRO';
+    result.detalle    = 'PDF web descargado correctamente. Sin Link FT Drive en planilla — no se puede comparar contra maestro.';
+    console.log(`[pdf] SIN_MAESTRO web=${result.hashWeb.slice(0,8)}… (planilla sin link Drive)`);
   } else {
     result.integridad = 'ERROR';
     result.detalle    = errs.join(' | ') || 'No se pudieron descargar los PDFs.';
@@ -465,7 +484,7 @@ async function writeReport(filePath, results) {
     if (['OK', 'COHERENTE'].includes(val)) return 'FFC6EFCE';   // verde
     if (val === 'DESACTUALIZADO')          return 'FFFFEB9C';   // amarillo
     if (val === 'ERROR_DESCARGA')          return 'FFFFD966';   // amarillo — pendiente reintento
-    if (['SIN_IMAGEN', 'SIN_DESCRIPCION'].includes(val)) return 'FFDCE6F1'; // azul claro
+    if (['SIN_IMAGEN', 'SIN_DESCRIPCION', 'SIN_MAESTRO'].includes(val)) return 'FFDCE6F1'; // azul claro
     if (val === 'INCOHERENTE')             return 'FFFFC7CE';   // rojo
     return 'FFFFC7CE';                                          // rojo (ERROR, etc.)
   };
@@ -533,11 +552,12 @@ async function gatherRowData(row, browser) {
     base.integridad  = pdf.integridad;
     base.hashWeb     = pdf.hashWeb;
     base.hashMaestro = pdf.hashMaestro;
-    base.urlFtDrive  = pdf.urlFtDrive || row.linkFtDrive || '';
+    base.urlFtDrive  = pdf.urlFtDrive || (isMissingMarker(row.linkFtDrive) ? '' : row.linkFtDrive) || '';
     base.urlFtWeb    = pdf.urlFtWeb   || '';
     base.versionPdf  = pdf.versionPdf  || '';
     base.detalleDiff = pdf.detalleDiff || '';
-    if (pdf.detalle && pdf.integridad !== 'OK') {
+    // Solo agregar [PDF] a discrepancias cuando hay error real (no para SIN_MAESTRO ni OK)
+    if (pdf.detalle && pdf.integridad !== 'OK' && pdf.integridad !== 'SIN_MAESTRO') {
       base.discrepancias = `[PDF] ${pdf.detalle}`;
     }
   } catch (err) {
@@ -551,8 +571,16 @@ async function gatherRowData(row, browser) {
     : { error: 'Fila sin URL de producto.' };
 
   if (scrape.error && row.urlImagen) scrape.imagen = row.urlImagen;
+  // Fallback: scraper sin imagen pero Col M tiene URL → garantizar que el batch la reciba
+  if (!scrape.imagen && row.urlImagen) scrape.imagen = row.urlImagen;
   base.urlImagen      = scrape.imagen || row.urlImagen || '';
   base.descripcionWeb = scrape.especificaciones?.['__descripcion_larga__']?.slice(0, 600) || '';
+
+  // Detectar producto que no aparece en PIN: API respondió pero sin título ni specs públicas
+  const publicSpecCount = Object.keys(scrape.especificaciones || {}).filter(k => !k.startsWith('__')).length;
+  if (!scrape.error && !scrape.titulo && publicSpecCount === 0) {
+    scrape._noEnPIN = true;
+  }
 
   return { base, scrape };
 }
@@ -579,11 +607,23 @@ function applyAudit(base, audit) {
 
 async function processRow(row, browser) {
   const { base, scrape } = await gatherRowData(row, browser);
+  if (scrape._noEnPIN) {
+    console.log(`[row] ${row.sku} → Página en blanco`);
+    return applyAudit(base, NO_EN_PIN_AUDIT);
+  }
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
   return applyAudit(base, audit);
 }
 
 // -------------------- main --------------------
+
+const NO_EN_PIN_AUDIT = {
+  estado_visual: 'SIN_IMAGEN', analisis_visual: 'Página en blanco',
+  estado_tecnico: 'OK', validaciones: 'Página en blanco',
+  discrepancias: 'Sin discrepancias', recomendaciones: 'Sin recomendaciones',
+  propuesta_correccion: 'No requiere correccion',
+  estado_descripcion: 'SIN_DESCRIPCION', analisis_descripcion: 'Página en blanco'
+};
 
 // Resultado base default cuando algo falla y no podemos auditar
 function buildErrorBase(row, errMsg) {
@@ -631,10 +671,20 @@ async function mainSync(rows, browser) {
   );
   await Promise.all(tasks);
 
-  // ---- Reintentos para filas con error de descarga de imagen ----
-  const retryKeys = Object.keys(results).filter(k => results[k]?.estadoVisual === 'ERROR_DESCARGA');
+  // ---- Reintentos para filas con error de descarga / parseo / imagen faltante ----
+  const retryKeys = Object.keys(results).filter(k => {
+    const r = results[k];
+    if (!r) return false;
+    if (r.estadoVisual === 'ERROR_DESCARGA') return true;
+    // SIN_IMAGEN con URL de imagen presente: la imagen existe pero algo falló al adjuntarla
+    if (r.estadoVisual === 'SIN_IMAGEN' && r.urlImagen && r.analisisVisual !== 'Página en blanco') return true;
+    // JSON no parseable: respuesta de Claude se rompió, vale la pena reintentar
+    const errText = `${r.analisisVisual || ''} ${r.discrepancias || ''}`;
+    if (errText.includes('JSON no parseable')) return true;
+    return false;
+  });
   if (retryKeys.length > 0) {
-    console.log(`\n[retry] ${retryKeys.length} filas con ERROR_DESCARGA — reintentando en 30s...`);
+    console.log(`\n[retry] ${retryKeys.length} filas con error recuperable — reintentando en 30s...`);
     await new Promise(r => setTimeout(r, 30000));
     for (const key of retryKeys) {
       const row = rows.find(r => String(r.rowNumber) === key);
@@ -672,8 +722,11 @@ async function mainBatch(rows, browser) {
     try {
       const { base, scrape } = await gatherRowData(row, browser);
       baseByKey[key] = base;
-      // Solo enviamos al batch las filas que tienen URL de producto o imagen
-      if (row.urlProducto || base.urlImagen) {
+      if (scrape._noEnPIN) {
+        // Producto sin datos en PIN: no enviar a Claude, resultado directo
+        applyAudit(base, NO_EN_PIN_AUDIT);
+        console.log(`[gather ${gathered}/${rows.length}] ${row.sku} → Página en blanco`);
+      } else if (row.urlProducto || base.urlImagen) {
         items.set(key, { scrape, opts: { descripcionMaestra: row.textoComercial } });
       }
       gathered++;
@@ -695,6 +748,33 @@ async function mainBatch(rows, browser) {
       if (baseByKey[key]) applyAudit(baseByKey[key], audit);
     }
     console.log(`[batch] fase 2 completa: ${audits.size} auditorías aplicadas`);
+  }
+
+  // ── Fase 3: retry para ERROR_DESCARGA / SIN_IMAGEN con imagen / JSON no parseable ──
+  const retryKeys = Object.keys(baseByKey).filter(k => {
+    const r = baseByKey[k];
+    if (!r) return false;
+    if (r.estadoVisual === 'ERROR_DESCARGA') return true;
+    if (r.estadoVisual === 'SIN_IMAGEN' && r.urlImagen && r.analisisVisual !== 'Página en blanco') return true;
+    const errText = `${r.analisisVisual || ''} ${r.discrepancias || ''}`;
+    if (errText.includes('JSON no parseable')) return true;
+    return false;
+  });
+  if (retryKeys.length > 0) {
+    console.log(`\n[batch] fase 3: ${retryKeys.length} filas con error recuperable — reintentando en 30s...`);
+    await new Promise(r => setTimeout(r, 30000));
+    for (const key of retryKeys) {
+      const row = rows.find(r => String(r.rowNumber) === key);
+      if (!row) continue;
+      try {
+        console.log(`[batch retry] ${row.sku}...`);
+        const res = await processRow(row, null);
+        baseByKey[key] = res;
+        console.log(`[batch retry ok] ${row.sku} visual=${res.estadoVisual} tec=${res.estadoTecnico}`);
+      } catch (err) {
+        console.error(`[batch retry err] ${row.sku}: ${err?.message || err}`);
+      }
+    }
   }
 
   return rows.map((r) => baseByKey[String(r.rowNumber)]).filter(Boolean);

@@ -108,7 +108,7 @@ async function buildVerifyRequest(customId, imageUrl, descripcionMaestra, initia
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: [{ type:'text', text: SYSTEM_PROMPT_VERIFY, cache_control:{ type:'ephemeral' } }],
+      system: [{ type:'text', text: SYSTEM_PROMPT_VERIFY }],
       messages: [{ role:'user', content }]
     }
   };
@@ -300,42 +300,49 @@ export async function batchAudit(items, opts = {}) {
     }
 
     if (verifyReqs.length > 0) {
-      const verifyChunks = chunkRequests(verifyReqs);
-      const verifySubmitted = await Promise.all(verifyChunks.map((c, i) =>
-        submitBatch(c, apiKey).then(r => {
-          console.log(`[batch verify] sub-batch ${i+1} submitido → ${r.id}`);
-          return r;
-        })
-      ));
-      const verifyFinished = await Promise.all(verifySubmitted.map(s => pollBatch(s.id, apiKey)));
-      const verifyResults = {};
-      for (const v of verifyFinished) {
-        if (!v.results_url) continue;
-        Object.assign(verifyResults, await retrieveBatchResults(v.results_url, apiKey));
-      }
-
-      // mapear resultados de verify por imagen, luego propagar a todos los SKUs con esa imagen
-      const verifyByImageResult = new Map();
-      for (const [imageUrl, info] of verifyByImage) {
-        const r = verifyResults[info.customId];
-        if (r && !r._error && !r._unparseable) verifyByImageResult.set(imageUrl, r);
-      }
-
-      for (const [errorId, imageUrl] of errorImageOf) {
-        const verify = verifyByImageResult.get(imageUrl);
-        if (!verify) continue;
-        const v = String(verify.estado_visual || '').toUpperCase();
-        const conf = String(verify.confianza || '').toLowerCase();
-        const original = results.get(errorId);
-        if (v === 'COHERENTE') {
-          original.estado_visual   = 'COHERENTE';
-          original.analisis_visual = `[Verificado 2-pass batch, confianza ${conf||'?'}] ${verify.analisis_visual || ''}`.trim();
-        } else {
-          original.analisis_visual = `[Confirmado 2-pass batch, confianza ${conf||'?'}] ${original.analisis_visual}`;
+      try {
+        const verifyChunks = chunkRequests(verifyReqs);
+        const verifySubmitted = await Promise.all(verifyChunks.map((c, i) =>
+          submitBatch(c, apiKey).then(r => {
+            console.log(`[batch verify] sub-batch ${i+1} submitido → ${r.id}`);
+            return r;
+          })
+        ));
+        const verifyFinished = await Promise.all(verifySubmitted.map(s => pollBatch(s.id, apiKey)));
+        const verifyResults = {};
+        for (const v of verifyFinished) {
+          if (!v.results_url) continue;
+          Object.assign(verifyResults, await retrieveBatchResults(v.results_url, apiKey));
         }
-        results.set(errorId, original);
+
+        // mapear resultados de verify por imagen, luego propagar a todos los SKUs con esa imagen
+        const verifyByImageResult = new Map();
+        for (const [imageUrl, info] of verifyByImage) {
+          const r = verifyResults[info.customId];
+          if (r && !r._error && !r._unparseable) verifyByImageResult.set(imageUrl, r);
+        }
+
+        for (const [errorId, imageUrl] of errorImageOf) {
+          const verify = verifyByImageResult.get(imageUrl);
+          if (!verify) continue;
+          const v = String(verify.estado_visual || '').toUpperCase();
+          const conf = String(verify.confianza || '').toLowerCase();
+          const original = results.get(errorId);
+          if (v === 'COHERENTE') {
+            original.estado_visual   = 'COHERENTE';
+            original.analisis_visual = `[Verificado 2-pass batch, confianza ${conf||'?'}] ${verify.analisis_visual || ''}`.trim();
+          } else {
+            original.analisis_visual = `[Confirmado 2-pass batch, confianza ${conf||'?'}] ${original.analisis_visual}`;
+          }
+          results.set(errorId, original);
+        }
+        console.log(`[batch] verify aplicado a ${errorImageOf.size} SKUs`);
+      } catch (verifyErr) {
+        const detail = verifyErr?.response?.data
+          ? JSON.stringify(verifyErr.response.data).slice(0, 300)
+          : verifyErr?.message || 'sin detalle';
+        console.warn(`[batch] verify 2-pass falló — manteniendo ERRORs originales. ${detail}`);
       }
-      console.log(`[batch] verify aplicado a ${errorImageOf.size} SKUs`);
     }
   }
 

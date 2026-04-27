@@ -3,6 +3,7 @@
 import axios from 'axios';
 import {
   ANTHROPIC_VERSION,
+  ANTHROPIC_BETA,
   MODEL,
   MAX_TOKENS,
   SYSTEM_PROMPT_FULL,
@@ -17,9 +18,8 @@ import {
 
 const BATCH_URL = 'https://api.anthropic.com/v1/messages/batches';
 
-// Chunks chicos: respuestas legibles ante errores y evita timeouts en upload.
-const MAX_BATCH_BYTES = 4 * 1024 * 1024;
-const MAX_BATCH_REQUESTS = 100;
+const MAX_BATCH_BYTES = 200 * 1024 * 1024;
+const MAX_BATCH_REQUESTS = 90_000;
 
 const POLL_INTERVAL_MS = 60_000;          // chequear cada 60s
 const MAX_POLL_DURATION_MS = 6 * 3_600_000; // 6 horas (matchea timeout del workflow)
@@ -29,7 +29,7 @@ function authHeaders(apiKey) {
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
     'anthropic-version': ANTHROPIC_VERSION,
-    'anthropic-beta': 'message-batches-2024-09-24'
+    'anthropic-beta': ANTHROPIC_BETA
   };
 }
 

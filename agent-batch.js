@@ -3,7 +3,6 @@
 import axios from 'axios';
 import {
   ANTHROPIC_VERSION,
-  ANTHROPIC_BETA,
   MODEL,
   MAX_TOKENS,
   SYSTEM_PROMPT_FULL,
@@ -26,12 +25,16 @@ const MAX_BATCH_REQUESTS = 90_000;
 const POLL_INTERVAL_MS = 60_000;          // chequear cada 60s
 const MAX_POLL_DURATION_MS = 6 * 3_600_000; // 6 horas (matchea timeout del workflow)
 
+// Claude 4.x: Batch API is GA — no longer requires message-batches-2024-09-24 beta header.
+// Only keep prompt-caching-2024-07-31 for cache_control support in system prompts.
+const BATCH_BETA = 'prompt-caching-2024-07-31';
+
 function authHeaders(apiKey) {
   return {
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
     'anthropic-version': ANTHROPIC_VERSION,
-    'anthropic-beta': ANTHROPIC_BETA
+    'anthropic-beta': BATCH_BETA
   };
 }
 
@@ -152,12 +155,24 @@ async function submitBatch(requests, apiKey) {
       return res.data;
     } catch (err) {
       lastErr = err;
-      const status = err?.response?.status;
-      const detail = err?.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : err?.message || '';
-      console.warn(`[batch] submitBatch HTTP ${status||'?'} intento ${attempt}/${MAX_RETRIES}: ${detail}`);
+      // ECONNRESET: servidor cerró la conexión (puede tener status en err.request.res)
+      const status = err?.response?.status ?? err?.request?.res?.statusCode;
+      const detail = err?.response?.data
+        ? JSON.stringify(err.response.data).slice(0, 300)
+        : err?.message || '';
+      console.warn(`[batch] submitBatch HTTP ${status||'?'} (${err?.code||'?'}) intento ${attempt}/${MAX_RETRIES}: ${detail}`);
+      // No reintentar errores 4xx — son errores del cliente, no transitorios
+      if (status && status >= 400 && status < 500) throw err;
       if (RETRYABLE.has(status) && attempt < MAX_RETRIES) {
         const wait = 15000 * attempt;
         console.log(`[batch] reintentando submitBatch en ${wait/1000}s...`);
+        await sleep(wait);
+        continue;
+      }
+      // ECONNRESET sin status conocido: reintentar
+      if (!status && err?.code === 'ECONNRESET' && attempt < MAX_RETRIES) {
+        const wait = 15000 * attempt;
+        console.log(`[batch] ECONNRESET sin status — reintentando en ${wait/1000}s...`);
         await sleep(wait);
         continue;
       }

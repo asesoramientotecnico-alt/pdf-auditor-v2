@@ -138,13 +138,33 @@ function chunkRequests(requests) {
 // ── Submit / poll / retrieve ────────────────────────────────────────────────
 
 async function submitBatch(requests, apiKey) {
-  const res = await axios.post(BATCH_URL, { requests }, {
-    headers: authHeaders(apiKey),
-    timeout: 120_000,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity
-  });
-  return res.data; // { id, processing_status, request_counts, ... }
+  const RETRYABLE = new Set([520, 529, 503, 502, 524]);
+  const MAX_RETRIES = 4;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await axios.post(BATCH_URL, { requests }, {
+        headers: authHeaders(apiKey),
+        timeout: 120_000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity
+      });
+      return res.data;
+    } catch (err) {
+      lastErr = err;
+      const status = err?.response?.status;
+      const detail = err?.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : err?.message || '';
+      console.warn(`[batch] submitBatch HTTP ${status||'?'} intento ${attempt}/${MAX_RETRIES}: ${detail}`);
+      if (RETRYABLE.has(status) && attempt < MAX_RETRIES) {
+        const wait = 15000 * attempt;
+        console.log(`[batch] reintentando submitBatch en ${wait/1000}s...`);
+        await sleep(wait);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function getBatchStatus(batchId, apiKey) {

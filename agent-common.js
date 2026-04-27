@@ -38,7 +38,7 @@ REGLAS CRITICAS DE VALIDACION TECNICA:
 Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), imagen de otro producto, specs de otro SKU, descripcion de familia incorrecta.
 Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
 
-Responde SOLO JSON valido. Sin bloques markdown, sin ```json, sin texto fuera del JSON:
+Responde SOLO JSON valido. No uses bloques de codigo. Empieza directamente con { y termina con }:
 {"estado_visual":"COHERENTE"|"ERROR"|"SIN_IMAGEN","analisis_visual":"texto","estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
 export const SYSTEM_PROMPT_TECHNICAL = `Inspector de Oficina Tecnica de Famiq. Auditas fichas de producto web.
@@ -61,7 +61,7 @@ REGLAS CRITICAS DE VALIDACION TECNICA:
 Errores criticos: material wrong (en ambos lados), diametro wrong (en ambos lados), norma wrong (en ambos lados), specs de otro SKU, descripcion de familia incorrecta.
 Recomendaciones: titulo mal redactado, specs incompletas, campos faltantes en specs.
 
-Responde SOLO JSON valido. Sin bloques markdown, sin ```json, sin texto fuera del JSON:
+Responde SOLO JSON valido. No uses bloques de codigo. Empieza directamente con { y termina con }:
 {"estado_tecnico":"OK"|"ERROR","validaciones":"campo:maestro=X tabla=Y OK/ERR | ...","discrepancias":"lista o Sin discrepancias","recomendaciones":"lista o Sin recomendaciones","propuesta_correccion":"texto o No requiere correccion","estado_descripcion":"COHERENTE"|"INCOHERENTE"|"SIN_DESCRIPCION","analisis_descripcion":"texto breve"}`;
 
 export const SYSTEM_PROMPT_VERIFY = `Inspector visual senior de Famiq. Una primera revisión IA sugirió que la imagen NO corresponde al producto declarado. Tu tarea es verificar críticamente ese diagnóstico antes de confirmarlo como ERROR.

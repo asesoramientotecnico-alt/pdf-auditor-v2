@@ -606,7 +606,7 @@ function applyAudit(base, audit) {
 async function processRow(row, browser) {
   const { base, scrape } = await gatherRowData(row, browser);
   if (scrape._noEnPIN) {
-    console.log(`[row] ${row.sku} → No aparece en PIN`);
+    console.log(`[row] ${row.sku} → Página en blanco`);
     return applyAudit(base, NO_EN_PIN_AUDIT);
   }
   const audit = await auditScrape(scrape, { descripcionMaestra: row.textoComercial });
@@ -616,11 +616,11 @@ async function processRow(row, browser) {
 // -------------------- main --------------------
 
 const NO_EN_PIN_AUDIT = {
-  estado_visual: 'SIN_IMAGEN', analisis_visual: 'No aparece en PIN',
-  estado_tecnico: 'OK', validaciones: 'No aparece en PIN',
+  estado_visual: 'SIN_IMAGEN', analisis_visual: 'Página en blanco',
+  estado_tecnico: 'OK', validaciones: 'Página en blanco',
   discrepancias: 'Sin discrepancias', recomendaciones: 'Sin recomendaciones',
   propuesta_correccion: 'No requiere correccion',
-  estado_descripcion: 'SIN_DESCRIPCION', analisis_descripcion: 'No aparece en PIN'
+  estado_descripcion: 'SIN_DESCRIPCION', analisis_descripcion: 'Página en blanco'
 };
 
 // Resultado base default cuando algo falla y no podemos auditar
@@ -713,7 +713,7 @@ async function mainBatch(rows, browser) {
       if (scrape._noEnPIN) {
         // Producto sin datos en PIN: no enviar a Claude, resultado directo
         applyAudit(base, NO_EN_PIN_AUDIT);
-        console.log(`[gather ${gathered}/${rows.length}] ${row.sku} → No aparece en PIN`);
+        console.log(`[gather ${gathered}/${rows.length}] ${row.sku} → Página en blanco`);
       } else if (row.urlProducto || base.urlImagen) {
         items.set(key, { scrape, opts: { descripcionMaestra: row.textoComercial } });
       }

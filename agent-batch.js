@@ -25,16 +25,11 @@ const MAX_BATCH_REQUESTS = 90_000;
 const POLL_INTERVAL_MS = 60_000;          // chequear cada 60s
 const MAX_POLL_DURATION_MS = 6 * 3_600_000; // 6 horas (matchea timeout del workflow)
 
-// Claude 4.x: Batch API is GA — no longer requires message-batches-2024-09-24 beta header.
-// Only keep prompt-caching-2024-07-31 for cache_control support in system prompts.
-const BATCH_BETA = 'prompt-caching-2024-07-31';
-
 function authHeaders(apiKey) {
   return {
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
-    'anthropic-version': ANTHROPIC_VERSION,
-    'anthropic-beta': BATCH_BETA
+    'anthropic-version': ANTHROPIC_VERSION
   };
 }
 
@@ -87,7 +82,7 @@ async function buildAuditRequest(customId, scrape, opts) {
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: [{ type:'text', text: systemPrompt, cache_control:{ type:'ephemeral' } }],
+      system: [{ type:'text', text: systemPrompt }],
       messages: [{ role:'user', content }]
     }
   };

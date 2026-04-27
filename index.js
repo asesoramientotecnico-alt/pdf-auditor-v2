@@ -669,10 +669,20 @@ async function mainSync(rows, browser) {
   );
   await Promise.all(tasks);
 
-  // ---- Reintentos para filas con error de descarga de imagen ----
-  const retryKeys = Object.keys(results).filter(k => results[k]?.estadoVisual === 'ERROR_DESCARGA');
+  // ---- Reintentos para filas con error de descarga / parseo / imagen faltante ----
+  const retryKeys = Object.keys(results).filter(k => {
+    const r = results[k];
+    if (!r) return false;
+    if (r.estadoVisual === 'ERROR_DESCARGA') return true;
+    // SIN_IMAGEN con URL de imagen presente: la imagen existe pero algo falló al adjuntarla
+    if (r.estadoVisual === 'SIN_IMAGEN' && r.urlImagen && r.analisisVisual !== 'Página en blanco') return true;
+    // JSON no parseable: respuesta de Claude se rompió, vale la pena reintentar
+    const errText = `${r.analisisVisual || ''} ${r.discrepancias || ''}`;
+    if (errText.includes('JSON no parseable')) return true;
+    return false;
+  });
   if (retryKeys.length > 0) {
-    console.log(`\n[retry] ${retryKeys.length} filas con ERROR_DESCARGA — reintentando en 30s...`);
+    console.log(`\n[retry] ${retryKeys.length} filas con error recuperable — reintentando en 30s...`);
     await new Promise(r => setTimeout(r, 30000));
     for (const key of retryKeys) {
       const row = rows.find(r => String(r.rowNumber) === key);

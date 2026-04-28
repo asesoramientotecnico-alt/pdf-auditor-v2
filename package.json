@@ -1,7 +1,7 @@
 {
   "name": "pdf-auditor-v2",
   "version": "1.0.0",
-  "description": "Agente Auditor de Calidad Web - Valida coherencia entre fichas tecnicas PDF, paginas web de famiq.com.ar y especificaciones tecnicas mediante scraping y analisis con Gemini.",
+  "description": "Agente Auditor de Calidad Web - Valida coherencia entre fichas tecnicas PDF, paginas web de famiq.com.ar y especificaciones tecnicas mediante scraping y analisis con Claude (Anthropic).",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -12,7 +12,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
     "axios": "^1.7.7",
     "exceljs": "^4.4.0",
     "googleapis": "^144.0.0",
